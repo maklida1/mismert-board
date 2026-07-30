@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>דף תקשורת עם המנהלים</title>
+<style>
+  :root{
+    --bg:#ffffff;
+    --card:#ffffff;
+    --ink:#2b2b2b;
+    --line:#333;
+    --accent:#3a5a78;
+    --marker:#fff6a3;
+    --marker-border:#f0dd4a;
+    --sub-line:#c9c2b2;
+    --done:#9a9a9a;
+  }
+  *{box-sizing:border-box;}
+  body{
+    font-family:"Segoe UI", Arial, sans-serif;
+    background:var(--bg);
+    color:var(--ink);
+    margin:0;
+    padding:24px;
+    direction:rtl;
+  }
+  h1{
+    text-align:center;
+    font-size:22px;
+    margin-bottom:20px;
+    color:var(--accent);
+  }
+  #board{
+    max-width:820px;
+    margin:0 auto;
+    display:flex;
+    flex-direction:column;
+    gap:14px;
+  }
+  .category{
+    background:var(--card);
+    border-radius:10px;
+    padding:10px 14px;
+    box-shadow:0 1px 4px rgba(0,0,0,0.08);
+  }
+  .category-header{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    border-bottom:2px solid var(--line);
+    padding-bottom:8px;
+    margin-bottom:12px;
+  }
+  .category-title{
+    font-weight:bold;
+    font-size:15px;
+    flex:1;
+    outline:none;
+    padding:2px 4px;
+    border-radius:4px;
+  }
+  .category-title:focus{background:#eef2f5;}
+  .icon-btn{
+    background:none;
+    border:1px solid #ccc;
+    border-radius:6px;
+    cursor:pointer;
+    font-size:13px;
+    padding:4px 8px;
+    color:#555;
+  }
+  .icon-btn:hover{background:#f0f0f0;}
+  .del-cat{color:#a33;border-color:#e0b0b0;}
+
+  .question-block{
+    display:flex;
+    gap:6px;
+    padding:1px 4px;
+    border-bottom:1px dashed var(--sub-line);
+    align-items:flex-start;
+    font-size:13px;
+  }
+  .question-block.sub{
+    margin-right:20px;
+    border-bottom:1px dashed #e2ddce;
+  }
+  .question-block.done{
+    opacity:1;
+  }
+  .question-block.done .qtext,
+  .question-block.done .answer,
+  .question-block.done .comment{
+    text-decoration:line-through;
+    text-decoration-color:#000;
+    text-decoration-thickness:2px;
+    color:#777;
+  }
+  .question-block.done .qnum{
+    color:#aaa;
+  }
+  .question-block.done button{
+    opacity:0.7;
+  }
+  .question-block.done .qtext.mark-cyan,
+  .question-block.done .qtext.mark-pink,
+  .question-block.done .comment.mark-cyan,
+  .question-block.done .comment.mark-pink{
+    background:transparent !important;
+  }
+  .question-block.done .mark-tools{
+    position:relative;
+  }
+  .question-block.done .mark-tools::after{
+    content:"";
+    position:absolute;
+    left:0;
+    right:0;
+    top:50%;
+    height:2px;
+    background:#000;
+    transform:translateY(-50%);
+    pointer-events:none;
+  }
+  .question-block.row-del-hover{
+    background:#cfcfcf;
+    transition:background-color 0.06s ease;
+  }
+  .category.row-del-hover{
+    background:#d8d8d8;
+    transition:background-color 0.06s ease;
+  }
+  .qnum{
+    min-width:20px;
+    font-weight:bold;
+    color:var(--accent);
+    padding-top:3px;
+    text-align:center;
+    font-size:12.5px;
+  }
+  .qbody{
+    flex:1;
+    display:flex;
+    flex-direction:row;
+    flex-wrap:wrap;
+    align-items:center;
+    gap:4px;
+  }
+  .qtext{
+    outline:none;
+    min-height:16px;
+    padding:2px 4px;
+    border-radius:3px;
+    line-height:1.3;
+    flex:0 1 auto;
+  }
+  .qtext:focus{background:#f2f6fa;}
+  .qtext:empty:before{
+    content:attr(data-placeholder);
+    color:#aaa;
+  }
+  .answer{
+    outline:none;
+    min-height:16px;
+    padding:2px 6px;
+    border-radius:3px;
+    background:var(--marker);
+    border-bottom:2px solid var(--marker-border);
+    line-height:1.3;
+    display:inline-block;
+    width:fit-content;
+    max-width:100%;
+    font-size:13px;
+  }
+  .answer:empty{
+    background:#ececec;
+    border-bottom:2px solid #ccc;
+  }
+  .answer:empty:before{
+    content:"נייט";
+    color:#999;
+  }
+  .comment{
+    outline:none;
+    min-height:16px;
+    padding:2px 6px;
+    border-radius:3px;
+    background:transparent;
+    border-bottom:1px solid #ccc;
+    line-height:1.3;
+    display:inline-block;
+    width:fit-content;
+    max-width:100%;
+    font-size:13px;
+    color:#444;
+  }
+  .comment:empty:before{
+    content:"תגובה שלי...";
+    color:#aaa;
+    font-style:italic;
+  }
+  .btn-add-comment{
+    font-size:10.5px;
+    padding:2px 6px;
+    border-radius:4px;
+    border:1px dashed #aaa;
+    background:#fff;
+    color:#666;
+    cursor:pointer;
+    white-space:nowrap;
+    height:fit-content;
+  }
+  .btn-add-comment:hover{background:#f0f0f0;}
+  .btn-del-comment{
+    font-size:11px;
+    padding:0 5px;
+    border-radius:4px;
+    border:1px solid #e0b0b0;
+    background:#fff;
+    color:#a33;
+    cursor:pointer;
+    line-height:1.6;
+    height:fit-content;
+  }
+  .btn-del-comment:hover{background:#fbeaea;}
+
+  .mark-cyan{background:#7fe8e8 !important;}
+  .mark-pink{background:#f7a8ce !important;}
+
+  .mark-tools{
+    display:inline-flex;
+    gap:3px;
+    vertical-align:middle;
+    margin:0 3px 0 10px;
+  }
+  .mark-tools .mark-dot{
+    width:11px;
+    height:11px;
+    border-radius:50%;
+    border:1px solid rgba(0,0,0,0.25);
+    cursor:pointer;
+    padding:0;
+    display:inline-block;
+  }
+  .mark-tools .mark-dot.active{
+    border:1.5px solid #333;
+  }
+  .mark-tools .mark-dot.dot-cyan{background:#7fe8e8;}
+  .mark-tools .mark-dot.dot-pink{background:#f7a8ce;}
+  .question-block button{
+    font-size:10.5px;
+    padding:2px 5px;
+    border-radius:4px;
+    border:1px solid #ccc;
+    background:#fff;
+    cursor:pointer;
+    white-space:nowrap;
+    height:fit-content;
+  }
+  .question-block button:hover{background:#f0f0f0;}
+  .btn-done{border-color:#7a9;color:#2a6b45;flex-shrink:0;}
+  .btn-indent{border-color:#99b;color:#33447a;margin-top:2px;flex-shrink:0;}
+  .btn-del{border-color:#e0b0b0;color:#a33;margin-top:2px;flex-shrink:0;}
+
+  .add-row{
+    margin-top:10px;
+    display:flex;
+    flex-wrap:wrap;
+    align-items:center;
+    gap:8px;
+  }
+  .qtext img{
+    max-width:150px;
+    max-height:150px;
+    border-radius:5px;
+    vertical-align:middle;
+    display:inline-block;
+    margin:2px 4px;
+  }
+  .new-question-input{
+    flex:1;
+    min-height:20px;
+    padding:7px 10px;
+    border:1px solid #ccc;
+    border-radius:6px;
+    font-size:14px;
+    background:#fff;
+  }
+  .new-question-input:focus{
+    background:#fff;
+  }
+  .add-row input{
+    flex:1;
+    padding:7px 10px;
+    border:1px solid #ccc;
+    border-radius:6px;
+    font-size:14px;
+  }
+  .add-row button{
+    padding:6px 10px;
+    border:1px solid #ccc;
+    border-radius:6px;
+    background:#f7f7f7;
+    color:#777;
+    cursor:pointer;
+    font-size:13px;
+  }
+  .add-row button:hover{background:#ececec;}
+
+  #add-category{
+    display:flex;
+    gap:8px;
+    max-width:820px;
+    margin:0 auto 6px auto;
+  }
+  #add-category input{
+    flex:1;
+    padding:8px 12px;
+    border:1px solid #ccc;
+    border-radius:6px;
+    font-size:15px;
+  }
+  #add-category button{
+    padding:8px 14px;
+    border:1px solid #ccc;
+    border-radius:6px;
+    background:#f7f7f7;
+    color:#777;
+    cursor:pointer;
+    font-size:15px;
+  }
+  #add-category button:hover{background:#ececec;}
+  .hint{
+    max-width:820px;
+    margin:0 auto 14px auto;
+    font-size:12.5px;
+    color:#777;
+    text-align:center;
+  }
+</style>
+</head>
+<body>
+
+<h1>📋 דף תקשורת עם המנהלים</h1>
+<div class="hint">הקלד/י שם קטגוריה למטה ולחצי "הוסף קטגוריה". בכל קטגוריה אפשר להוסיף שאלות ממוספרות, להפוך שאלה לתת-סעיף (+), להוסיף תשובת מנהל משמרת (מסומנת בצהוב), ולסמן "בוצע" כשהטיפול הושלם.</div>
+
+<div id="add-category">
+  <input id="new-cat-input" type="text" placeholder="שם קטגוריה חדשה, למשל: קוליות">
+  <button id="btn-add-cat" title="הוסף קטגוריה חדשה">+</button>
+</div>
+
+<div id="board"></div>
+
+<!-- טעינת Firebase וניהול בזמן אמת -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+  import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyBtuVDsRt9-jCorJR0avkNqC4qySmyaNfM",
+    authDomain: "mismert-8952a.firebaseapp.com",
+    databaseURL: "https://mismert-8952a-default-rtdb.firebaseio.com",
+    projectId: "mismert-8952a",
+    storageBucket: "mismert-8952a.firebasestorage.app",
+    messagingSenderId: "148589046902",
+    appId: "1:148589046902:web:d926763430bb8d13ed4357"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getDatabase(app);
+  const stateRef = ref(db, 'boardState');
+
+  let state = { categories: [] };
+
+  function saveState() {
+    set(stateRef, state);
+  }
+
+  onValue(stateRef, (snapshot) => {
+    const val = snapshot.val();
+    if (val && val.categories) {
+      state = val;
+    } else {
+      state = { categories: [{ id: 'cat1', title: 'קוליות', questions: [] }] };
+      saveState();
+    }
+    render();
+  });
+
+  let lastFocusCatId = null;
+  let lastFocusCommentQid = null;
+  let lastFocusCommentIdx = null;
+  let lastFocusNightQid = null;
+  let lastFocusNightIdx = null;
+  let flatNav = [];
+
+  function getCaretOffset(el){
+    const sel = window.getSelection();
+    if(sel.rangeCount===0) return 0;
+    return sel.getRangeAt(0).startOffset;
+  }
+  function placeCaretAtEnd(el){
+    const range = document.createRange();
+    const sel = window.getSelection();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+  function placeCaretAtStart(el){
+    const range = document.createRange();
+    const sel = window.getSelection();
+    range.selectNodeContents(el);
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+  function focusFieldEnd(qid, col){
+    const el = document.querySelector(`[data-qid="${qid}"][data-col="${col}"]`);
+    if(!el) return;
+    el.focus();
+    placeCaretAtEnd(el);
+  }
+
+  function uid(prefix){
+    return prefix + '_' + Math.random().toString(36).slice(2,9);
+  }
+
+  window.addCategory = function(){
+    const input = document.getElementById('new-cat-input');
+    const title = input.value.trim();
+    if(!title) return;
+    if(!state.categories) state.categories = [];
+    state.categories.push({id: uid('cat'), title: title, questions: []});
+    input.value = '';
+    saveState();
+  };
+
+  document.getElementById('btn-add-cat').onclick = window.addCategory;
+
+  function deleteCategory(catId){
+    if(!confirm('למחוק את כל הקטגוריה?')) return;
+    state.categories = state.categories.filter(c => c.id !== catId);
+    saveState();
+  }
+
+  function addQuestion(catId, html){
+    const cat = state.categories.find(c => c.id === catId);
+    if(!cat) return;
+    if(!cat.questions) cat.questions = [];
+    cat.questions.push({id: uid('q'), text: html || '', answer: '', sub: false, done: false, comments: [], textMark: null, commentMarks: [], commentNights: [], commentNightsOn: []});
+    saveState();
+  }
+
+  function toggleIndent(catId, qId){
+    const cat = state.categories.find(c => c.id === catId);
+    const q = cat.questions.find(q => q.id === qId);
+    q.sub = !q.sub;
+    saveState();
+  }
+
+  function toggleDone(catId, qId){
+    const cat = state.categories.find(c => c.id === catId);
+    const q = cat.questions.find(q => q.id === qId);
+    q.done = !q.done;
+    saveState();
+  }
+
+  function deleteQuestion(catId, qId){
+    const cat = state.categories.find(c => c.id === catId);
+    cat.questions = cat.questions.filter(q => q.id !== qId);
+    saveState();
+  }
+
+  function updateText(catId, qId, field, value){
+    const cat = state.categories.find(c => c.id === catId);
+    const q = cat.questions.find(q => q.id === qId);
+    q[field] = value;
+    saveState();
+  }
+
+  function addComment(catId, qId){
+    const cat = state.categories.find(c => c.id === catId);
+    const q = cat.questions.find(q => q.id === qId);
+    if(!q.comments) q.comments = [];
+    if(!q.commentMarks) q.commentMarks = [];
+    if(!q.commentNights) q.commentNights = [];
+    if(!q.commentNightsOn) q.commentNightsOn = [];
+    q.comments.push('');
+    q.commentMarks.push(null);
+    q.commentNights.push('');
+    q.commentNightsOn.push(false);
+    saveState();
+  }
+
+  function updateComment(catId, qId, idx, value){
+    const cat = state.categories.find(c => c.id === catId);
+    const q = cat.questions.find(q => q.id === qId);
+    q.comments[idx] = value;
+    saveState();
+  }
+
+  function addCommentNight(catId, qId, idx){
+    const cat = state.categories.find(c => c.id === catId);
+    const q = cat.questions.find(q => q.id === qId);
+    if(!q.commentNightsOn) q.commentNightsOn = [];
+    if(!q.commentNights) q.commentNights = [];
+    q.commentNightsOn[idx] = true;
+    saveState();
+  }
+
+  function updateCommentNight(catId, qId, idx, value){
+    const cat = state.categories.find(c => c.id === catId);
+    const q = cat.questions.find(q => q.id === qId);
+    if(!q.commentNights) q.commentNights = [];
+    q.commentNights[idx] = value;
+    saveState();
+  }
+
+  function deleteComment(catId, qId, idx){
+    const cat = state.categories.find(c => c.id === catId);
+    const q = cat.questions.find(q => q.id === qId);
+    q.comments.splice(idx, 1);
+    if(q.commentMarks) q.commentMarks.splice(idx, 1);
+    if(q.commentNights) q.commentNights.splice(idx, 1);
+    if(q.commentNightsOn) q.commentNightsOn.splice(idx, 1);
+    saveState();
+  }
+
+  function buildMarkTools(catId, qId, target, activeColor, commentIdx){
+    const wrap = document.createElement('span');
+    wrap.className = 'mark-tools';
+    const colors = ['cyan', 'pink'];
+    colors.forEach(color => {
+      const dot = document.createElement('button');
+      dot.className = 'mark-dot dot-' + color + (activeColor === color ? ' active' : '');
+      dot.title = 'סמן במרקר';
+      dot.onclick = () => toggleMark(catId, qId, target, color, commentIdx);
+      wrap.appendChild(dot);
+    });
+    return wrap;
+  }
+
+  function toggleMark(catId, qId, target, color, commentIdx){
+    const cat = state.categories.find(c => c.id === catId);
+    const q = cat.questions.find(q => q.id === qId);
+    if(target === 'text'){
+      q.textMark = (q.textMark === color) ? null : color;
+    } else if(target === 'comment'){
+      if(!q.commentMarks) q.commentMarks = [];
+      q.commentMarks[commentIdx] = (q.commentMarks[commentIdx] === color) ? null : color;
+    }
+    saveState();
+  }
+
+  function updateCatTitle(catId, value){
+    const cat = state.categories.find(c => c.id === catId);
+    cat.title = value;
+    saveState();
+  }
+
+  function render(){
+    const board = document.getElementById('board');
+    board.innerHTML = '';
+    flatNav = [];
+
+    (state.categories || []).forEach(cat => {
+      const catDiv = document.createElement('div');
+      catDiv.className = 'category';
+
+      const header = document.createElement('div');
+      header.className = 'category-header';
+
+      const titleEl = document.createElement('div');
+      titleEl.className = 'category-title';
+      titleEl.contentEditable = true;
+      titleEl.innerText = cat.title;
+      titleEl.onblur = () => updateCatTitle(cat.id, titleEl.innerText);
+      header.appendChild(titleEl);
+
+      const delCatBtn = document.createElement('button');
+      delCatBtn.className = 'icon-btn del-cat';
+      delCatBtn.innerText = '🗑 מחק קטגוריה';
+      delCatBtn.onclick = () => deleteCategory(cat.id);
+      header.appendChild(delCatBtn);
+
+      catDiv.appendChild(header);
+
+      let mainCounter = 0;
+      (cat.questions || []).forEach(q => {
+        if(!q.sub) mainCounter++;
+
+        const qDiv = document.createElement('div');
+        qDiv.className = 'question-block' + (q.sub ? ' sub' : '') + (q.done ? ' done' : '');
+
+        const indentBtn = document.createElement('button');
+        indentBtn.className = 'btn-indent';
+        indentBtn.innerText = q.sub ? '➡' : '⬅';
+        indentBtn.onclick = () => toggleIndent(cat.id, q.id);
+        qDiv.appendChild(indentBtn);
+
+        const numDiv = document.createElement('div');
+        numDiv.className = 'qnum';
+        numDiv.innerText = q.sub ? '+' : (mainCounter + '.');
+        qDiv.appendChild(numDiv);
+
+        const bodyDiv = document.createElement('div');
+        bodyDiv.className = 'qbody';
+
+        const textDiv = document.createElement('div');
+        textDiv.className = 'qtext' + (q.textMark ? (' mark-' + q.textMark) : '');
+        textDiv.contentEditable = true;
+        textDiv.setAttribute('data-placeholder', 'כתבי כאן את השאלה...');
+        textDiv.innerHTML = q.text;
+        textDiv.onblur = () => updateText(cat.id, q.id, 'text', textDiv.innerHTML);
+        bodyDiv.appendChild(textDiv);
+        bodyDiv.appendChild(buildMarkTools(cat.id, q.id, 'text', q.textMark, null));
+
+        const answerDiv = document.createElement('div');
+        answerDiv.className = 'answer';
+        answerDiv.contentEditable = true;
+        answerDiv.setAttribute('data-placeholder', 'נייט');
+        answerDiv.innerText = q.answer;
+        answerDiv.onblur = () => updateText(cat.id, q.id, 'answer', answerDiv.innerText);
+        bodyDiv.appendChild(answerDiv);
+
+        (q.comments || []).forEach((commentText, idx) => {
+          const mark = (q.commentMarks && q.commentMarks[idx]) || null;
+          const commentDiv = document.createElement('div');
+          commentDiv.className = 'comment' + (mark ? (' mark-' + mark) : '');
+          commentDiv.contentEditable = true;
+          commentDiv.setAttribute('data-placeholder', 'תגובה...');
+          commentDiv.innerText = commentText;
+          commentDiv.onblur = () => updateComment(cat.id, q.id, idx, commentDiv.innerText);
+          bodyDiv.appendChild(commentDiv);
+          bodyDiv.appendChild(buildMarkTools(cat.id, q.id, 'comment', mark, idx));
+
+          const delCommentBtn = document.createElement('button');
+          delCommentBtn.className = 'btn-del-comment';
+          delCommentBtn.innerText = '×';
+          delCommentBtn.onclick = () => deleteComment(cat.id, q.id, idx);
+          bodyDiv.appendChild(delCommentBtn);
+
+          const nightOn = (q.commentNightsOn && q.commentNightsOn[idx]) || (q.commentNights && q.commentNights[idx]);
+          if(nightOn){
+            const nightDiv = document.createElement('div');
+            nightDiv.className = 'answer';
+            nightDiv.contentEditable = true;
+            nightDiv.setAttribute('data-placeholder', 'נייט');
+            nightDiv.innerText = (q.commentNights && q.commentNights[idx]) || '';
+            nightDiv.onblur = () => updateCommentNight(cat.id, q.id, idx, nightDiv.innerText);
+            bodyDiv.appendChild(nightDiv);
+          } else {
+            const addNightBtn = document.createElement('button');
+            addNightBtn.className = 'btn-add-comment';
+            addNightBtn.innerText = '+ נייט';
+            addNightBtn.onclick = () => addCommentNight(cat.id, q.id, idx);
+            bodyDiv.appendChild(addNightBtn);
+          }
+        });
+
+        const addCommentBtn = document.createElement('button');
+        addCommentBtn.className = 'btn-add-comment';
+        addCommentBtn.innerText = '+ תגובה';
+        addCommentBtn.onclick = () => addComment(cat.id, q.id);
+        bodyDiv.appendChild(addCommentBtn);
+
+        const doneBtn = document.createElement('button');
+        doneBtn.className = 'btn-done';
+        doneBtn.innerText = q.done ? '↩ בטל טופל' : '✔ טופל';
+        doneBtn.onclick = () => toggleDone(cat.id, q.id);
+        bodyDiv.appendChild(doneBtn);
+
+        qDiv.appendChild(bodyDiv);
+
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn-del';
+        delBtn.innerText = '🗑';
+        delBtn.onclick = () => deleteQuestion(cat.id, q.id);
+        qDiv.appendChild(delBtn);
+
+        catDiv.appendChild(qDiv);
+      });
+
+      const addRow = document.createElement('div');
+      addRow.className = 'add-row';
+      const addInput = document.createElement('div');
+      addInput.className = 'qtext new-question-input';
+      addInput.contentEditable = true;
+      addInput.id = 'add-input-' + cat.id;
+      addInput.setAttribute('data-placeholder', 'שאלה חדשה...');
+      addInput.onkeydown = (e) => {
+        if(e.key === 'Enter'){
+          e.preventDefault();
+          addQuestion(cat.id, addInput.innerHTML);
+        }
+      };
+
+      const addBtn = document.createElement('button');
+      addBtn.innerText = '+';
+      addBtn.onclick = () => addQuestion(cat.id, addInput.innerHTML);
+
+      addRow.appendChild(addInput);
+      addRow.appendChild(addBtn);
+      catDiv.appendChild(addRow);
+
+      board.appendChild(catDiv);
+    });
+  }
+</script>
+
+</body>
+</html>
