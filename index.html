@@ -1,0 +1,3390 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>שאלות ובקשות משמרת</title>
+
+<!-- טעינת ספריות Firebase CDN (גרסת SDK v8 המקבלת את firebase גלובלי) -->
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+<script>
+  // השוואה עמוקה שלא רגישה לסדר מפתחות - Firebase לא תמיד שומר על סדר המפתחות המקורי
+  function deepEqual(a, b) {
+    if (a === b) return true;
+    if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+    if (Array.isArray(a) !== Array.isArray(b)) return false;
+    const keysA = Object.keys(a);
+    const keysB = Object.keys(b);
+    if (keysA.length !== keysB.length) return false;
+    for (const key of keysA) {
+      if (!deepEqual(a[key], b[key])) return false;
+    }
+    return true;
+  }
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyBtUvDSrt9-jCorJR0avkNqC4qySmyaNfM",
+    authDomain: "mismert-8952a.firebaseapp.com",
+    databaseURL: "https://mismert-8952a-default-rtdb.firebaseio.com",
+    projectId: "mismert-8952a",
+    storageBucket: "mismert-8952a.firebasestorage.app",
+    messagingSenderId: "148589046902",
+    appId: "1:148589046902:web:d926763430bb8d13ed4357",
+    measurementId: "G-HXQV8HNV6N"
+  };
+
+  let database = null;
+  let historyData = {};
+  let historyLoadError = null;
+
+  // רשימת ברירת המחדל של המשתמשים - משמשת רק כדי לאכלס את Firebase בפעם הראשונה.
+  // לאחר מכן, המקור האמיתי הוא הנתיב usersState ב-Firebase, וכל שינוי (הוספה/מחיקה/עריכה)
+  // שמנהל המערכת (Yuval) עושה בדף "ניהול משתמשים" נשמר שם ומסתנכרן לכל המכשירים.
+  const DEFAULT_USERS = {
+    'maklida2': 'Dd5050**',
+    'maklida3': 'Dd5050**',
+    'hemed': 'Yuval1948',
+    'office2': 'Ss5050**',
+    'Yuval': '0525343434',
+    'night1': '1234',
+    'night2': '1234',
+    'Gidon': '0522745574'
+  };
+  let usersData = Object.assign({}, DEFAULT_USERS);
+  let usersLoadError = null;
+
+  // רשימת המשתמשים בעלי הרשאת מנהל - מסתנכרנת עם Firebase בנתיב adminUsersState.
+  // Yuval הוא תמיד מנהל (הגנה כדי לא לנעול את הגישה לניהול בטעות).
+  const DEFAULT_ADMINS = { 'Yuval': true, 'Gidon': true };
+  let adminUsersData = Object.assign({}, DEFAULT_ADMINS);
+  let adminUsersLoadError = null;
+
+  // אתחול Firebase - עטוף ב-try/catch כדי שאם הטעינה נכשלת (למשל אין אינטרנט) הדף לא יישבר
+  try {
+    firebase.initializeApp(firebaseConfig);
+    database = firebase.database();
+    // סנכרון בזמן אמת מול Firebase עם השלמת רשימות ריקות
+    database.ref('boardState').on('value', (snapshot) => {
+      const data = snapshot.val();
+      if (data && Array.isArray(data.categories)) {
+        // Firebase מוחק מערכים ריקים, אז אנחנו משלימים אותם כאן כדי שהקוד לא יישבר
+        data.categories.forEach(cat => {
+          if (!cat.questions) cat.questions = [];
+          if (['cat1', 'cat2', 'cat3', 'cat-night'].includes(cat.id)) cat.permanent = true;
+          cat.questions.forEach(q => {
+            if (!q.comments) q.comments = [];
+            if (!q.commentMarks) q.commentMarks = [];
+            if (!q.commentNights) q.commentNights = [];
+            if (!q.commentNightsOn) q.commentNightsOn = [];
+            if (!q.commentExtra) q.commentExtra = [];
+            q.comments.forEach((c, i) => {
+              if (!q.commentExtra[i]) q.commentExtra[i] = [];
+              q.commentExtra[i].forEach(item => {
+                if (!item.text) item.text = '';
+              });
+            });
+          });
+        });
+        // Firebase מחזיר אלינו הד של הכתיבה שלנו עצמנו - אם הנתונים זהים למה שכבר יש,
+        // מדובר בהד ולא בשינוי אמיתי ממישהו אחר, אז מדלגים על render() כדי לא לאפס פוקוס/חצים
+        if (deepEqual(data, state)) return;
+        state = data;
+        render();
+      } else if (!data) {
+        // מסד הנתונים ריק לגמרי (פעם ראשונה) - נשמור את ברירת המחדל כדי שכל המכשירים יתחילו מאותה נקודה
+        saveStateToFirebase();
+      } else {
+        console.error('Ignoring malformed data from Firebase:', data);
+      }
+    }, (err) => {
+      console.error('Firebase read failed (check your database Rules):', err);
+    });
+
+    // סנכרון בזמן אמת מול היסטוריית השאלות שנמחקו (לפי תאריך מחיקה)
+    database.ref('historyState').on('value', (snapshot) => {
+      historyData = snapshot.val() || {};
+      historyLoadError = null;
+      if (typeof currentView !== 'undefined' && currentView === 'history') render();
+    }, (err) => {
+      console.error('Firebase history read failed (check your database Rules):', err);
+      historyLoadError = (err && err.message) ? err.message : 'שגיאה לא ידועה';
+      if (typeof currentView !== 'undefined' && currentView === 'history') render();
+    });
+
+    // סנכרון בזמן אמת מול רשימת המשתמשים (שם + סיסמה), כדי ששינויים של המנהל יחולו על כל המכשירים
+    database.ref('usersState').on('value', (snapshot) => {
+      const data = snapshot.val();
+      if (data && typeof data === 'object' && Object.keys(data).length > 0) {
+        usersData = data;
+        usersLoadError = null;
+        // ממזגים משתמשי ברירת מחדל חדשים שנוספו בקוד ועדיין לא קיימים ב-Firebase,
+        // בלי לגעת במשתמשים/סיסמאות קיימים (כולל שינויים שהמנהל עשה בעצמו)
+        let mergedAny = false;
+        Object.keys(DEFAULT_USERS).forEach((uname) => {
+          if (!Object.prototype.hasOwnProperty.call(usersData, uname)) {
+            usersData[uname] = DEFAULT_USERS[uname];
+            mergedAny = true;
+          }
+        });
+        if (mergedAny) {
+          database.ref('usersState').set(usersData).catch((err) => {
+            console.error('Firebase USERS MERGE failed:', err);
+          });
+        }
+        if (typeof currentView !== 'undefined' && currentView === 'users') render();
+      } else if (!data) {
+        // אין עדיין רשימת משתמשים ב-Firebase (פעם ראשונה) - נשמור את ברירת המחדל
+        database.ref('usersState').set(DEFAULT_USERS).catch((err) => {
+          console.error('Firebase USERS SEED failed:', err);
+        });
+      }
+    }, (err) => {
+      console.error('Firebase users read failed (check your database Rules):', err);
+      usersLoadError = (err && err.message) ? err.message : 'שגיאה לא ידועה';
+      if (typeof currentView !== 'undefined' && currentView === 'users') render();
+    });
+
+    // סנכרון בזמן אמת מול רשימת הרשאות המנהל (מי מהמשתמשים הוא מנהל), כדי ששינויים יחולו על כל המכשירים
+    database.ref('adminUsersState').on('value', (snapshot) => {
+      const data = snapshot.val();
+      if (data && typeof data === 'object' && Object.keys(data).length > 0) {
+        adminUsersData = data;
+        adminUsersLoadError = null;
+        // ממזגים מנהלי ברירת מחדל חדשים שנוספו בקוד ועדיין לא קיימים ב-Firebase
+        // (כולל הבטחה ש-Yuval תמיד מנהל, כדי לא לנעול בטעות את הגישה לניהול)
+        let adminsMergedAny = false;
+        Object.keys(DEFAULT_ADMINS).forEach((uname) => {
+          if (!Object.prototype.hasOwnProperty.call(adminUsersData, uname)) {
+            adminUsersData[uname] = true;
+            adminsMergedAny = true;
+          }
+        });
+        if (adminsMergedAny) {
+          database.ref('adminUsersState').set(adminUsersData).catch((err) => {
+            console.error('Firebase ADMINS MERGE failed:', err);
+          });
+        }
+        if (typeof currentUser !== 'undefined' && currentUser) {
+          const adminBtn = document.getElementById('usersAdminBtn');
+          if (adminBtn) adminBtn.style.display = isAdmin() ? '' : 'none';
+        }
+        if (typeof currentView !== 'undefined' && currentView === 'users') render();
+      } else if (!data) {
+        // אין עדיין רשימת הרשאות מנהל ב-Firebase (פעם ראשונה) - נשמור את ברירת המחדל
+        database.ref('adminUsersState').set(adminUsersData).catch((err) => {
+          console.error('Firebase ADMINS SEED failed:', err);
+        });
+      }
+    }, (err) => {
+      console.error('Firebase admin users read failed (check your database Rules):', err);
+      adminUsersLoadError = (err && err.message) ? err.message : 'שגיאה לא ידועה';
+      if (typeof currentView !== 'undefined' && currentView === 'users') render();
+    });
+  } catch (err) {
+    console.error('Firebase init failed:', err);
+  }
+
+  // פונקציה לשמירה בכל שינוי
+  function saveStateToFirebase() {
+    if (!database) return;
+    database.ref('boardState').set(state).catch((err) => {
+      console.error('Firebase SAVE failed (check your database Rules for write access):', err);
+    });
+  }
+
+  // מחזיר מפתח תאריך בפורמט YYYY-MM-DD (לפי שעון מקומי) לשימוש בהיסטוריית משמרות
+  function getTodayDateKey() {
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return yyyy + '-' + mm + '-' + dd;
+  }
+
+  // מארכב שאלה שנמחקה להיסטוריית המשמרות, לפי תאריך היום וקטגוריה.
+  // שימוש ב-push (לא set על כל המערך) כדי שכמה מכשירים שמוחקים שאלות במקביל לא ידרסו זה את זה.
+  function archiveDeletedQuestion(cat, q) {
+    if (!database) return;
+    if (typeof currentUser !== 'undefined' && currentUser) q.deletedBy = currentUser;
+    const dateKey = getTodayDateKey();
+    const catRef = database.ref('historyState/' + dateKey + '/' + cat.id);
+    catRef.child('title').set(cat.title);
+    catRef.child('questions').push(q).catch((err) => {
+      console.error('Firebase ARCHIVE failed:', err);
+    });
+  }
+</script>
+
+<style>
+  :root{
+    --bg:#ffffff;
+    --card:#ffffff;
+    --ink:#2b2b2b;
+    --line:#333;
+    --accent:#3a5a78;
+    --marker:#fff6a3;
+    --marker-border:#f0dd4a;
+    --sub-line:#c9c2b2;
+    --done:#9a9a9a;
+  }
+  *{box-sizing:border-box;}
+  body{
+    font-family:"Segoe UI", Arial, sans-serif;
+    background:var(--bg);
+    color:var(--ink);
+    margin:0;
+    padding:24px;
+    direction:rtl;
+  }
+  h1{
+    text-align:center;
+    font-size:22px;
+    margin-bottom:4px;
+    color:var(--accent);
+  }
+  .today-date{
+    text-align:center;
+    font-size:12px;
+    color:#888;
+    margin-bottom:16px;
+  }
+  #board{
+    max-width:820px;
+    margin:0 auto;
+    display:flex;
+    flex-direction:column;
+    gap:14px;
+  }
+  .category{
+    background:var(--card);
+    border-radius:10px;
+    padding:10px 14px;
+    box-shadow:0 1px 4px rgba(0,0,0,0.08);
+  }
+  .category-header{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    border-bottom:1px solid #b9b9b9;
+    padding-bottom:3px;
+    margin-bottom:12px;
+  }
+  .clear-confirm-banner{
+    display:flex;
+    flex-wrap:wrap;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    background:#fff3e0;
+    border:1px solid #f0c98a;
+    border-radius:6px;
+    padding:8px 12px;
+    margin-bottom:12px;
+    font-size:13px;
+    color:#7a4d00;
+  }
+  .clear-confirm-btns{
+    display:flex;
+    gap:8px;
+    flex-shrink:0;
+  }
+  .clear-confirm-btns button{
+    padding:5px 10px;
+    border-radius:6px;
+    border:1px solid #ccc;
+    cursor:pointer;
+    font-size:13px;
+  }
+  .clear-confirm-btns button:first-child{
+    background:#e57373;
+    color:#fff;
+    border-color:#e57373;
+  }
+  .del-confirm-inline{
+    display:inline-flex;
+    align-items:center;
+    gap:5px;
+    background:#fff3e0;
+    border:1px solid #f0c98a;
+    border-radius:6px;
+    padding:3px 6px;
+    font-size:11.5px;
+    color:#7a4d00;
+    flex-shrink:0;
+  }
+  .question-block .del-confirm-inline button{
+    padding:2px 7px;
+    border-radius:4px;
+    border:1px solid #ccc;
+    cursor:pointer;
+    font-size:11.5px;
+    background:#fff;
+  }
+  .question-block .del-confirm-inline button:first-of-type{
+    background:#e57373;
+    color:#fff;
+    border-color:#e57373;
+  }
+  .category-title{
+    font-weight:bold;
+    font-size:13px;
+    flex:1;
+    outline:none;
+    padding:2px 4px;
+    border-radius:4px;
+  }
+  .category-title:focus{background:#eef2f5;}
+  .icon-btn{
+    background:none;
+    border:1px solid #ccc;
+    border-radius:6px;
+    cursor:pointer;
+    font-size:13px;
+    padding:4px 8px;
+    color:#555;
+  }
+  .icon-btn:hover{background:#f0f0f0;}
+  .del-cat{color:#a33;border-color:#e0b0b0;}
+  .icon-btn-broom{
+    padding:3px 5px;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+  }
+  .move-cat-btn{
+    background:none;
+    border:none;
+    cursor:pointer;
+    font-size:15px;
+    padding:2px 4px;
+    color:#bbb;
+    line-height:1;
+  }
+  .move-cat-btn:hover{color:#888;}
+  .move-cat-btn:disabled{
+    color:#e5e5e5;
+    cursor:default;
+  }
+
+  .question-block{
+    display:flex;
+    gap:1px;
+    padding:1px 4px;
+    border-bottom:1px dashed var(--sub-line);
+    align-items:flex-start;
+    font-size:13px;
+  }
+  .question-block.sub{
+    margin-right:20px;
+    border-bottom:1px dashed #e2ddce;
+  }
+  .question-block.done{
+    opacity:1;
+  }
+  .question-block.done .qtext,
+  .question-block.done .answer,
+  .question-block.done .comment{
+    text-decoration:line-through;
+    text-decoration-color:#000;
+    text-decoration-thickness:2px;
+    color:#777;
+  }
+  .question-block.done .qnum{
+    color:#aaa;
+  }
+  .question-block.done button{
+    opacity:0.7;
+  }
+  .question-block.done .qtext.mark-cyan,
+  .question-block.done .qtext.mark-green,
+  .question-block.done .qtext.mark-pink,
+  .question-block.done .qtext.mark-purple,
+  .question-block.done .qtext.mark-gray,
+  .question-block.done .qtext.mark-yellow,
+  .question-block.done .qtext.mark-red,
+  .question-block.done .qtext.mark-brown,
+  .question-block.done .comment.mark-cyan,
+  .question-block.done .comment.mark-green,
+  .question-block.done .comment.mark-pink,
+  .question-block.done .comment.mark-purple,
+  .question-block.done .comment.mark-gray,
+  .question-block.done .comment.mark-yellow,
+  .question-block.done .comment.mark-red,
+  .question-block.done .comment.mark-brown{
+    background:transparent !important;
+  }
+  .question-block.done .mark-tools{
+    position:relative;
+  }
+  .question-block.done .mark-tools::after{
+    content:"";
+    position:absolute;
+    left:0;
+    right:0;
+    top:50%;
+    height:2px;
+    background:#000;
+    transform:translateY(-50%);
+    pointer-events:none;
+  }
+  .question-block.row-del-hover{
+    background:#cfcfcf;
+    transition:background-color 0.06s ease;
+  }
+  .category.row-del-hover{
+    background:#d8d8d8;
+    transition:background-color 0.06s ease;
+  }
+  .qnum{
+    min-width:14px;
+    font-weight:bold;
+    color:var(--accent);
+    padding-top:3px;
+    text-align:center;
+    font-size:12.5px;
+    margin-left:-3px;
+  }
+  .qbody{
+    flex:1;
+    display:flex;
+    flex-direction:row;
+    flex-wrap:wrap;
+    align-items:center;
+    gap:4px;
+  }
+  .q-attribution{
+    width:100%;
+    font-size:10.5px;
+    color:#999;
+    margin-top:1px;
+  }
+  .qtext{
+    outline:none;
+    min-height:16px;
+    padding:2px 2px;
+    border-radius:3px;
+    line-height:1.3;
+    flex:0 1 auto;
+  }
+  .qtext:focus{background:#f2f6fa;}
+  .qtext:empty:before{
+    content:attr(data-placeholder);
+    color:#aaa;
+  }
+  .qtext img{
+    max-width:100%;
+    height:auto;
+    display:block;
+    border-radius:4px;
+    cursor:zoom-in;
+    margin:2px 0;
+  }
+  .image-resize-popup{
+    position:fixed;
+    z-index:200;
+    background:#fff;
+    border:1px solid #ccc;
+    border-radius:8px;
+    box-shadow:0 4px 14px rgba(0,0,0,0.15);
+    padding:8px 12px;
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+    font-size:12px;
+    color:#555;
+  }
+  .image-resize-row{
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  .image-resize-row span:first-child{
+    min-width:34px;
+  }
+  .image-resize-popup input[type="range"]{
+    width:120px;
+  }
+  .image-resize-popup .image-resize-percent{
+    min-width:40px;
+    text-align:left;
+    direction:ltr;
+  }
+  .answer{
+    outline:none;
+    min-height:16px;
+    padding:2px 6px;
+    border-radius:3px;
+    background:var(--marker);
+    border-bottom:2px solid var(--marker-border);
+    line-height:1.3;
+    display:inline-block;
+    width:fit-content;
+    max-width:100%;
+    font-size:13px;
+  }
+  .answer:empty{
+    background:#ececec;
+    border-bottom:2px solid #ccc;
+  }
+  .answer:empty:before{
+    content:"נייט";
+    color:#999;
+  }
+  .comment{
+    outline:none;
+    min-height:16px;
+    padding:2px 6px;
+    border-radius:3px;
+    background:transparent;
+    border-bottom:1px solid #ccc;
+    line-height:1.3;
+    display:inline-block;
+    width:fit-content;
+    max-width:100%;
+    font-size:13px;
+    color:#444;
+  }
+  .comment:empty:before{
+    content:"מקליד/ה...";
+    color:#aaa;
+    font-style:italic;
+  }
+  .btn-add-comment{
+    font-size:10.5px;
+    padding:2px 6px;
+    border-radius:4px;
+    border:1px dashed #aaa;
+    background:#fff;
+    color:#666;
+    cursor:pointer;
+    white-space:nowrap;
+    height:fit-content;
+  }
+  .btn-add-comment:hover{background:#f0f0f0;}
+  .btn-del-comment{
+    font-size:11px;
+    padding:0 5px;
+    border-radius:4px;
+    border:1px solid #e0b0b0;
+    background:#fff;
+    color:#a33;
+    cursor:pointer;
+    line-height:1.6;
+    height:fit-content;
+  }
+  .btn-del-comment:hover{background:#fbeaea;}
+
+  .mark-cyan{background:#6fe0e0 !important;}
+  .mark-green{background:#7fdb85 !important;}
+  .mark-pink{background:#f48fc2 !important;}
+  .mark-purple{background:#b98ef0 !important;}
+  .mark-gray{background:#b0b0b0 !important;}
+  .mark-yellow{background:#ffe14d !important;}
+  .mark-red{background:#ff6f6f !important;}
+  .mark-brown{background:#b98a5a !important;}
+
+  .mark-tools{
+    display:inline-flex;
+    align-items:center;
+    gap:3px;
+    vertical-align:middle;
+    margin:0 3px 0 4px;
+    position:relative;
+  }
+  .mark-pen{
+    width:18px;
+    height:18px;
+    min-width:18px;
+    border-radius:50%;
+    border:1px solid #ccc;
+    background:#fff;
+    cursor:pointer;
+    padding:0;
+    color:#999;
+    line-height:1;
+    display:inline-flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:1px;
+  }
+  .mark-pen:hover{color:#555;}
+  .mark-pen.mark-pen-active{
+    border:1.5px solid #333;
+    color:#444;
+  }
+  .mark-pen svg{
+    display:block;
+  }
+  .mark-pen-bar{
+    width:11px;
+    height:2.5px;
+    border-radius:1px;
+    background:transparent;
+  }
+  .mark-pen-bar.dot-cyan{background:#6fe0e0;}
+  .mark-pen-bar.dot-green{background:#7fdb85;}
+  .mark-pen-bar.dot-pink{background:#f48fc2;}
+  .mark-pen-bar.dot-purple{background:#b98ef0;}
+  .mark-pen-bar.dot-gray{background:#b0b0b0;}
+  .mark-pen-bar.dot-yellow{background:#ffe14d;}
+  .mark-pen-bar.dot-red{background:#ff6f6f;}
+  .mark-pen-bar.dot-brown{background:#b98a5a;}
+  .mark-palette{
+    display:inline-flex;
+    gap:3px;
+    align-items:center;
+  }
+  .question-menu{
+    position:relative;
+    display:inline-flex;
+    align-items:center;
+    margin:2px 1px 0 1px;
+  }
+  .question-menu-btn{
+    width:18px;
+    height:18px;
+    min-width:18px;
+    border-radius:5px;
+    border:1px solid #ccc;
+    background:#fff;
+    cursor:pointer;
+    padding:0;
+    color:#999;
+    line-height:1;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    font-size:12px;
+  }
+  .question-menu-btn:hover{color:#555;}
+  .question-menu-btn.mark-pen-active{
+    border:1.5px solid #333;
+    color:#444;
+  }
+  .question-menu-btn.dot-cyan{background:#e4fbfb;}
+  .question-menu-btn.dot-green{background:#e9fbea;}
+  .question-menu-btn.dot-pink{background:#fdeef6;}
+  .question-menu-btn.dot-purple{background:#f4ecfd;}
+  .question-menu-btn.dot-gray{background:#f0f0f0;}
+  .question-menu-btn.dot-yellow{background:#fffbe0;}
+  .question-menu-btn.dot-red{background:#ffecec;}
+  .question-menu-btn.dot-brown{background:#f3e9df;}
+  .question-menu-dropdown{
+    position:absolute;
+    top:calc(100% + 3px);
+    right:0;
+    background:#fff;
+    border:1px solid #ccc;
+    border-radius:6px;
+    box-shadow:0 2px 8px rgba(0,0,0,0.15);
+    padding:5px;
+    display:flex;
+    flex-direction:column;
+    align-items:stretch;
+    gap:4px;
+    z-index:20;
+    width:max-content;
+  }
+  .question-menu-add{
+    padding:4px 8px;
+    border-radius:5px;
+    border:1px solid #ccc;
+    background:#fff;
+    cursor:pointer;
+    font-size:11.5px;
+    color:#555;
+    white-space:nowrap;
+    width:100%;
+  }
+  .question-menu-add:hover{background:#f0f0f0;}
+  .question-menu-row{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding-bottom:4px;
+    border-bottom:1px dashed var(--sub-line);
+  }
+  .question-menu-row .mark-tools{
+    margin:0;
+  }
+  .add-comment-popup{
+    position:absolute;
+    top:calc(100% + 3px);
+    right:0;
+    background:#fff;
+    border:1px solid #ccc;
+    border-radius:6px;
+    box-shadow:0 2px 8px rgba(0,0,0,0.15);
+    padding:5px;
+    display:flex;
+    flex-direction:column;
+    gap:4px;
+    z-index:20;
+    width:max-content;
+  }
+  .add-comment-popup button{
+    padding:4px 8px;
+    border-radius:5px;
+    border:1px solid #ccc;
+    background:#fff;
+    cursor:pointer;
+    font-size:11.5px;
+    color:#555;
+    white-space:nowrap;
+    width:100%;
+  }
+  .add-comment-popup button:hover{background:#f0f0f0;}
+  .add-comment-popup-mark-row{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding-top:4px;
+    border-top:1px dashed var(--sub-line);
+  }
+  .add-comment-popup-mark-row .mark-tools{
+    margin:0;
+  }
+  .mark-tools .mark-dot{
+    width:11px;
+    height:11px;
+    border-radius:50%;
+    border:1px solid rgba(0,0,0,0.25);
+    cursor:pointer;
+    padding:0;
+    display:inline-block;
+  }
+  .mark-tools .mark-dot.active{
+    border:1.5px solid #333;
+  }
+  .mark-tools .mark-dot.dot-cyan{background:#6fe0e0;}
+  .mark-tools .mark-dot.dot-green{background:#7fdb85;}
+  .mark-tools .mark-dot.dot-pink{background:#f48fc2;}
+  .mark-tools .mark-dot.dot-purple{background:#b98ef0;}
+  .mark-tools .mark-dot.dot-gray{background:#b0b0b0;}
+  .mark-tools .mark-dot.dot-yellow{background:#ffe14d;}
+  .mark-tools .mark-dot.dot-red{background:#ff6f6f;}
+  .mark-tools .mark-dot.dot-brown{background:#b98a5a;}
+  .mark-tools .mark-dot-clear{
+    background:#fff;
+    box-sizing:border-box;
+    width:9px;
+    height:9px;
+    min-width:9px;
+    padding:0;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    color:#999;
+  }
+  .mark-tools .mark-dot-clear svg{
+    display:block;
+  }
+  .mark-tools .mark-dot-clear:hover{color:#555;}
+  .mark-tools .mark-dot-clear.active{color:#333;}
+  .question-block button{
+    font-size:10.5px;
+    padding:2px 5px;
+    border-radius:4px;
+    border:1px solid #ccc;
+    background:#fff;
+    cursor:pointer;
+    white-space:nowrap;
+    height:fit-content;
+  }
+  .question-block button:hover{background:#f0f0f0;}
+  .btn-done-mini{
+    border:none;
+    background:none;
+    color:#bbb;
+    padding:2px 4px;
+    font-size:11px;
+  }
+  .btn-done-mini:hover{background:#f0f0f0;color:#888;}
+  .btn-indent{border-color:#99b;color:#33447a;margin-top:2px;flex-shrink:0;}
+  .question-block button.btn-square{
+    width:13px;
+    height:13px;
+    min-width:13px;
+    margin-top:3px;
+    padding:0;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    line-height:1;
+  }
+  .btn-square svg{
+    display:block;
+  }
+  .btn-del{border-color:#e0b0b0;color:#a33;margin-top:2px;flex-shrink:0;}
+
+  .add-row{
+    margin-top:10px;
+    display:flex;
+    flex-wrap:wrap;
+    align-items:center;
+    gap:8px;
+  }
+  .new-question-input{
+    flex:1;
+    min-height:20px;
+    padding:7px 10px;
+    border:1px solid #ccc;
+    border-radius:6px;
+    font-size:14px;
+    background:#fff;
+  }
+  .new-question-input:focus{
+    background:#fff;
+  }
+  .add-row input{
+    flex:1;
+    padding:7px 10px;
+    border:1px solid #ccc;
+    border-radius:6px;
+    font-size:14px;
+  }
+  .add-row button{
+    padding:6px 10px;
+    border:1px solid #ccc;
+    border-radius:6px;
+    background:#f7f7f7;
+    color:#777;
+    cursor:pointer;
+    font-size:13px;
+  }
+  .add-row button:hover{background:#ececec;}
+
+  .add-category-row{
+    display:flex;
+    gap:8px;
+    max-width:820px;
+    margin:0 auto 6px auto;
+  }
+  .add-category-row input{
+    flex:1;
+    padding:8px 12px;
+    border:1px solid #ccc;
+    border-radius:6px;
+    font-size:15px;
+  }
+  .add-category-row button{
+    padding:8px 14px;
+    border:1px solid #ccc;
+    border-radius:6px;
+    background:#f7f7f7;
+    color:#777;
+    cursor:pointer;
+    font-size:15px;
+  }
+  .add-category-row button:hover{background:#ececec;}
+  .hint{
+    max-width:820px;
+    margin:0 auto 14px auto;
+    font-size:12.5px;
+    color:#777;
+    text-align:center;
+  }
+
+  .top-bar{
+    max-width:820px;
+    margin:0 auto;
+    display:grid;
+    grid-template-columns:1fr auto 1fr;
+    align-items:center;
+    gap:10px;
+  }
+  .top-bar h1{
+    grid-column:2;
+    margin:0;
+    font-size:17px;
+    text-align:center;
+  }
+  .user-bar{
+    grid-column:3;
+    justify-self:end;
+    display:flex;
+    align-items:center;
+    gap:6px;
+    font-size:12px;
+    color:#666;
+  }
+  .user-info-col{
+    display:flex;
+    flex-direction:column;
+    align-items:flex-end;
+    gap:4px;
+  }
+  .user-top-row{
+    display:flex;
+    align-items:center;
+    gap:6px;
+  }
+  .logout-btn{
+    background:#fff;
+    border:1px solid #ccc;
+    border-radius:6px;
+    padding:4px 8px;
+    font-size:11.5px;
+    color:#555;
+    cursor:pointer;
+  }
+  .logout-btn:hover{background:#f0f0f0;}
+  .logout-icon-btn{
+    background:none;
+    border:none;
+    border-radius:0;
+    width:24px;
+    height:24px;
+    padding:0;
+    font-size:14px;
+    color:#555;
+    cursor:pointer;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    line-height:1;
+  }
+  .logout-icon-btn:hover{opacity:0.7;}
+  .login-screen{
+    min-height:70vh;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:20px;
+  }
+  .login-box{
+    background:#fff;
+    border:1px solid #ddd;
+    border-radius:12px;
+    box-shadow:0 2px 12px rgba(0,0,0,0.08);
+    padding:28px 26px;
+    width:100%;
+    max-width:320px;
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+  }
+  .login-box h2{
+    text-align:center;
+    margin:0 0 6px 0;
+    color:var(--accent);
+    font-size:19px;
+  }
+  .login-subtitle{
+    text-align:center;
+    margin:-4px 0 6px 0;
+    color:#999;
+    font-size:12px;
+  }
+  .login-box label{
+    font-size:12.5px;
+    color:#666;
+    margin-bottom:-4px;
+  }
+  .login-box input{
+    padding:9px 10px;
+    border:1px solid #ccc;
+    border-radius:6px;
+    font-size:14px;
+  }
+  .login-box button{
+    margin-top:6px;
+    padding:9px 10px;
+    border:none;
+    border-radius:6px;
+    background:var(--accent);
+    color:#fff;
+    font-size:14px;
+    cursor:pointer;
+  }
+  .login-box button:hover{opacity:0.9;}
+  .login-error{
+    background:#fdecea;
+    border:1px solid #f5b5ae;
+    color:#7a1f14;
+    border-radius:6px;
+    padding:6px 8px;
+    font-size:12.5px;
+    text-align:center;
+  }
+  .history-toggle-btn{
+    grid-column:1;
+    justify-self:start;
+    position:relative;
+    top:-4px;
+    background:none;
+    border:none;
+    height:24px;
+    display:flex;
+    align-items:center;
+    padding:0 9px;
+    font-size:11px;
+    color:#555;
+    cursor:pointer;
+  }
+  .history-toggle-btn:hover{opacity:0.7;}
+
+  .history-date-block{
+    max-width:820px;
+    margin:0 auto 22px auto;
+  }
+  .history-date-heading{
+    font-weight:bold;
+    font-size:16px;
+    color:var(--accent);
+    border-bottom:2px solid var(--line);
+    padding-bottom:4px;
+    margin-bottom:10px;
+  }
+  .history-empty{
+    max-width:820px;
+    margin:30px auto;
+    text-align:center;
+    color:#999;
+    font-size:14px;
+  }
+  .history-error{
+    max-width:820px;
+    margin:20px auto;
+    background:#fdecea;
+    border:1px solid #f5b5ae;
+    border-radius:8px;
+    padding:14px 16px;
+    color:#7a1f14;
+    font-size:13.5px;
+    line-height:1.6;
+  }
+  .history-error b{display:block;margin-bottom:4px;font-size:14px;}
+  .history-error code{
+    background:#fff;
+    border:1px solid #f0c0b8;
+    border-radius:4px;
+    padding:1px 5px;
+    direction:ltr;
+    display:inline-block;
+  }
+  .history-nav{
+    max-width:820px;
+    margin:0 auto 16px auto;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:8px;
+    flex-wrap:wrap;
+  }
+  .history-nav-btn{
+    background:#fff;
+    border:1px solid #ccc;
+    border-radius:6px;
+    padding:6px 12px;
+    font-size:13px;
+    color:#444;
+    cursor:pointer;
+  }
+  .history-nav-btn:hover:not(:disabled){background:#f0f0f0;}
+  .history-nav-btn:disabled{
+    color:#ccc;
+    cursor:default;
+    border-color:#e5e5e5;
+  }
+  .history-date-select{
+    padding:6px 10px;
+    border:1px solid #ccc;
+    border-radius:6px;
+    font-size:13.5px;
+    color:var(--accent);
+    font-weight:bold;
+    background:#fff;
+  }
+  .question-block.readonly{
+    cursor:default;
+  }
+  .question-block.readonly .qtext,
+  .question-block.readonly .answer,
+  .question-block.readonly .comment{
+    cursor:default;
+  }
+  .history-restore-btn{
+    margin-top:6px;
+    align-self:flex-start;
+    background:#fff;
+    border:1px solid #bcd9c2;
+    border-radius:6px;
+    padding:4px 10px;
+    font-size:11.5px;
+    color:#2a7a3b;
+    cursor:pointer;
+  }
+  .history-restore-btn:hover{background:#eefbf0;}
+</style>
+</head>
+<body>
+
+<div id="loginScreen" class="login-screen">
+  <div class="login-box">
+    <h2>התחברות</h2>
+    <div class="login-subtitle">משמרת עלה עלה</div>
+    <div id="loginError" class="login-error" style="display:none;"></div>
+    <label for="loginUsername">שם משתמש</label>
+    <input type="text" id="loginUsername" autocomplete="username" autofocus onkeydown="if(event.key==='Enter'){ document.getElementById('loginPassword').focus(); }">
+    <label for="loginPassword">סיסמה</label>
+    <input type="password" id="loginPassword" autocomplete="current-password" onkeydown="if(event.key==='Enter'){ attemptLogin(); }">
+    <button id="loginSubmitBtn" onclick="attemptLogin()">התחברות</button>
+  </div>
+</div>
+
+<div id="appRoot" style="display:none;">
+
+<div class="top-bar">
+  <button id="historyToggleBtn" class="history-toggle-btn" onclick="toggleHistoryView()">היסטוריה</button>
+  <h1>שאלות ובקשות משמרת</h1>
+  <div class="user-bar">
+    <div class="user-info-col">
+      <div class="user-top-row">
+        <span id="currentUserLabel"></span>
+        <button class="logout-icon-btn" onclick="logoutUser()" title="יציאה">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M15 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h9"></path>
+            <path d="M10 12h11"></path>
+            <path d="M17.5 8.5L21 12l-3.5 3.5"></path>
+          </svg>
+        </button>
+      </div>
+      <button id="usersAdminBtn" class="logout-btn" style="display:none;" onclick="toggleUsersView()">ניהול משתמשים</button>
+    </div>
+  </div>
+</div>
+<div id="todayDate" class="today-date"></div>
+
+<div id="board"></div>
+
+</div>
+
+<script>
+// --- ניהול משתמשים / התחברות ---
+// הערה: זו הגנה בסיסית בצד הלקוח לנוחות בלבד - רשימת המשתמשים (usersData) מסתנכרנת עם
+// Firebase, אבל מי שמסתכל בקוד המקור של הדף עדיין יכול לראות אותה - זה לא אמצעי אבטחה אמיתי.
+const ADMIN_USERNAME = 'Yuval';
+let currentUser = null;
+
+function isAdmin(){
+  return currentUser === ADMIN_USERNAME || !!(currentUser && adminUsersData && adminUsersData[currentUser]);
+}
+
+function showApp(username){
+  currentUser = username;
+  const loginScreen = document.getElementById('loginScreen');
+  const appRoot = document.getElementById('appRoot');
+  if(loginScreen) loginScreen.style.display = 'none';
+  if(appRoot) appRoot.style.display = '';
+  const label = document.getElementById('currentUserLabel');
+  if(label) label.innerText = username;
+  const adminBtn = document.getElementById('usersAdminBtn');
+  if(adminBtn) adminBtn.style.display = isAdmin() ? '' : 'none';
+  render();
+}
+
+function attemptLogin(){
+  const userInput = document.getElementById('loginUsername');
+  const passInput = document.getElementById('loginPassword');
+  const errBox = document.getElementById('loginError');
+  const username = (userInput && userInput.value || '').trim();
+  const password = (passInput && passInput.value) || '';
+  if(Object.prototype.hasOwnProperty.call(usersData, username) && usersData[username] === password){
+    if(errBox) errBox.style.display = 'none';
+    try { localStorage.setItem('loggedInUser', username); } catch(e){}
+    showApp(username);
+  } else {
+    if(errBox){
+      errBox.innerText = 'שם משתמש או סיסמה שגויים';
+      errBox.style.display = 'block';
+    }
+    if(passInput) passInput.value = '';
+  }
+}
+
+function logoutUser(){
+  try { localStorage.removeItem('loggedInUser'); } catch(e){}
+  currentUser = null;
+  location.reload();
+}
+
+function tryAutoLogin(){
+  let saved = null;
+  try { saved = localStorage.getItem('loggedInUser'); } catch(e){}
+  if(saved && Object.prototype.hasOwnProperty.call(usersData, saved)){
+    showApp(saved);
+  }
+}
+
+function renderTodayDate(){
+  const days = ['יום ראשון', 'יום שני', 'יום שלישי', 'יום רביעי', 'יום חמישי', 'יום שישי', 'יום שבת'];
+  const now = new Date();
+  const dayName = days[now.getDay()];
+  const dd = String(now.getDate()).padStart(2, '0');
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const yy = String(now.getFullYear()).slice(-2);
+  const dateStr = dd + '/' + mm + '/' + yy;
+  const el = document.getElementById('todayDate');
+  if(el) el.innerText = dayName + ' ' + dateStr;
+}
+renderTodayDate();
+
+let state = {
+  categories: [
+    {
+      id: 'cat1',
+      title: 'קוליות',
+      questions: [],
+      permanent: true
+    },
+    {
+      id: 'cat2',
+      title: 'מיילים',
+      questions: [],
+      permanent: true
+    },
+    {
+      id: 'cat3',
+      title: 'מרקטמן',
+      questions: [],
+      permanent: true
+    },
+    {
+      id: 'cat-night',
+      title: 'בקשות נייט',
+      questions: [],
+      mode: 'night',
+      permanent: true
+    }
+  ]
+};
+
+let currentView = 'board'; // 'board' או 'history'
+let historyDateIndex = 0; // אינדקס התאריך המוצג כרגע בעמוד ההיסטוריה (0 = החדש ביותר)
+let lastFocusCatId = null;
+let lastFocusNewQid = null;
+let lastFocusCommentQid = null;
+let lastFocusCommentIdx = null;
+let lastFocusNightQid = null;
+let lastFocusNightIdx = null;
+let navOrder = [];
+let flatNav = [];
+let questionNav = [];
+
+function isCaretOnFirstLine(el){
+  const sel = window.getSelection();
+  if(!sel.rangeCount) return true;
+  const range = sel.getRangeAt(0).cloneRange();
+  range.collapse(true);
+  let rects = range.getClientRects();
+  if(rects.length === 0) rects = [el.getBoundingClientRect()];
+  const caretRect = rects[0];
+  const elRect = el.getBoundingClientRect();
+  return (caretRect.top - elRect.top) < (caretRect.height / 2 + 2);
+}
+function isCaretOnLastLine(el){
+  const sel = window.getSelection();
+  if(!sel.rangeCount) return true;
+  const range = sel.getRangeAt(0).cloneRange();
+  range.collapse(true);
+  let rects = range.getClientRects();
+  if(rects.length === 0) rects = [el.getBoundingClientRect()];
+  const caretRect = rects[0];
+  const elRect = el.getBoundingClientRect();
+  return (elRect.bottom - caretRect.bottom) < (caretRect.height / 2 + 2);
+}
+function normalizeEmptyOnBlur(el){
+  if(el.textContent.trim() === '' && !el.querySelector('img') && el.innerHTML !== ''){
+    el.innerHTML = '';
+  }
+}
+
+function getCaretOffset(el){
+  const sel = window.getSelection();
+  if(sel.rangeCount === 0) return 0;
+  const range = sel.getRangeAt(0);
+  if(!el.contains(range.startContainer)) return 0;
+  const preRange = document.createRange();
+  preRange.selectNodeContents(el);
+  preRange.setEnd(range.startContainer, range.startOffset);
+  return preRange.toString().length;
+}
+function placeCaretAtEnd(el){
+  const range = document.createRange();
+  const sel = window.getSelection();
+  range.selectNodeContents(el);
+  range.collapse(false);
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+function placeCaretAtStart(el){
+  const range = document.createRange();
+  const sel = window.getSelection();
+  range.selectNodeContents(el);
+  range.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+function findQuestionByQid(qid){
+  for(const cat of state.categories){
+    const q = cat.questions.find(q => q.id === qid);
+    if(q) return q;
+  }
+  return null;
+}
+function extrasFor(qid, idx){
+  const q = findQuestionByQid(qid);
+  return (q && q.commentExtra && q.commentExtra[idx]) || [];
+}
+function focusExtra(qid, idx, subIdx, atStart){
+  const el = document.querySelector(`[data-qid="${qid}"][data-col="extra"][data-idx="${idx}"][data-subidx="${subIdx}"]`);
+  if(!el) return false;
+  el.focus();
+  if(atStart) placeCaretAtStart(el); else placeCaretAtEnd(el);
+  return true;
+}
+// זז קדימה מתוך הפריט האחרון של שרשור idx נתון: לפריט הראשון בשורה הבאה ב-flatNav
+function focusForwardFromRowEnd(qid, idx){
+  const pos = flatIndexOf(qid, idx);
+  if(pos !== -1 && pos + 1 < flatNav.length){
+    return focusFlatItemForward(flatNav[pos + 1], true);
+  }
+  return false;
+}
+function focusFieldEnd(qid, col){
+  const el = document.querySelector(`[data-qid="${qid}"][data-col="${col}"]`);
+  if(!el) return;
+  el.focus();
+  placeCaretAtEnd(el);
+}
+function focusFieldStart(qid, col){
+  const el = document.querySelector(`[data-qid="${qid}"][data-col="${col}"]`);
+  if(!el) return;
+  el.focus();
+  placeCaretAtStart(el);
+}
+function queryFlatEl(item, columnType){
+  if(item.idx === null || item.idx === undefined){
+    const col = columnType === 'primary' ? 'text' : 'answer';
+    return document.querySelector(`[data-qid="${item.qid}"][data-col="${col}"]`);
+  }
+  const col = columnType === 'primary' ? 'comment' : 'commentNight';
+  return document.querySelector(`[data-qid="${item.qid}"][data-col="${col}"][data-idx="${item.idx}"]`);
+}
+function focusFlatItemAt(item, columnType, atStart){
+  if(!item) return false;
+  if(item.qid === null){
+    const el = document.getElementById('add-input-' + item.catId);
+    if(!el) return false;
+    el.focus();
+    if(atStart) placeCaretAtStart(el); else placeCaretAtEnd(el);
+    return true;
+  }
+  let el = queryFlatEl(item, columnType);
+  if(!el && columnType === 'secondary'){
+    el = queryFlatEl(item, 'primary');
+  }
+  if(!el) return false;
+  el.focus();
+  if(atStart) placeCaretAtStart(el); else placeCaretAtEnd(el);
+  return true;
+}
+// כמו focusFlatItemAt, אבל לשימוש ספציפי כשמתקדמים לשורה חדשה: אם השדה הראשי (comment/text) לא קיים בפועל
+// (למשל תגובה ריקה שהוסתרה כי יש אחריה נייט), נופלים ל-secondary של אותה שורה במקום להיכשל בשקט
+function focusFlatItemForward(item, atStart){
+  if(!item) return false;
+  if(item.qid === null){
+    return focusFlatItemAt(item, 'primary', atStart);
+  }
+  let el = queryFlatEl(item, 'primary');
+  if(!el) el = queryFlatEl(item, 'secondary');
+  if(!el) return false;
+  el.focus();
+  if(atStart) placeCaretAtStart(el); else placeCaretAtEnd(el);
+  return true;
+}
+function focusFlatItem(item, columnType){
+  return focusFlatItemAt(item, columnType, false);
+}
+function flatIndexOf(qid, idx){
+  const normIdx = (idx === undefined) ? null : idx;
+  return flatNav.findIndex(item => item.qid === qid && item.idx === normIdx);
+}
+// זז אנכית בין שאלות בלבד (מדלג לגמרי על תגובות/נייטים של השאלה) - לשימוש בשדה השאלה/תשובה העליון
+function moveQuestionVertical(qid, columnType, dir){
+  const pos = questionNav.findIndex(item => item.qid === qid);
+  if(pos === -1) return false;
+  const newPos = pos + dir;
+  if(newPos < 0 || newPos >= questionNav.length) return false;
+  const targetQid = questionNav[newPos].qid;
+  let el = queryFlatEl({qid: targetQid, idx: null}, columnType);
+  if(!el && columnType === 'secondary'){
+    el = queryFlatEl({qid: targetQid, idx: null}, 'primary');
+  }
+  if(!el) return false;
+  el.focus();
+  placeCaretAtEnd(el);
+  return true;
+}
+function moveFlatVertical(qid, idx, columnType, dir){
+  const pos = flatIndexOf(qid, idx);
+  if(pos === -1) return;
+  const newPos = pos + dir;
+  if(newPos < 0 || newPos >= flatNav.length) return;
+  focusFlatItem(flatNav[newPos], columnType);
+}
+function goForwardFromField(qid, normIdx, columnType){
+  if(columnType === 'primary'){
+    if(normIdx === null){
+      const answerEl = document.querySelector(`[data-qid="${qid}"][data-col="answer"]:not([data-idx])`);
+      if(answerEl){
+        answerEl.focus();
+        placeCaretAtStart(answerEl);
+        return true;
+      }
+      const pos = flatIndexOf(qid, normIdx);
+      if(pos !== -1 && pos + 1 < flatNav.length){
+        return focusFlatItemForward(flatNav[pos + 1], true);
+      }
+      return false;
+    }
+    const nightEl = document.querySelector(`[data-qid="${qid}"][data-col="commentNight"][data-idx="${normIdx}"]`);
+    if(nightEl){
+      nightEl.focus();
+      placeCaretAtStart(nightEl);
+      return true;
+    }
+    const extras = extrasFor(qid, normIdx);
+    return extras.length > 0 ? focusExtra(qid, normIdx, 0, true) : focusForwardFromRowEnd(qid, normIdx);
+  } else {
+    if(normIdx !== null){
+      const extras = extrasFor(qid, normIdx);
+      return extras.length > 0 ? focusExtra(qid, normIdx, 0, true) : focusForwardFromRowEnd(qid, normIdx);
+    }
+    const pos = flatIndexOf(qid, normIdx);
+    if(pos !== -1 && pos + 1 < flatNav.length){
+      return focusFlatItemForward(flatNav[pos + 1], true);
+    }
+    return false;
+  }
+}
+function goBackwardFromField(qid, normIdx, columnType){
+  if(columnType === 'secondary'){
+    const el = queryFlatEl({qid, idx: normIdx}, 'primary');
+    if(el){
+      el.focus();
+      placeCaretAtEnd(el);
+      return true;
+    }
+    // אין תגובת מקליד/ה (מוסתרת כי ריקה) - ממשיכים אחורה כאילו זו הייתה תחילת השורה
+  }
+  const pos = flatIndexOf(qid, normIdx);
+  if(pos > 0){
+    return focusFlatItemAt(flatNav[pos - 1], 'secondary', false);
+  }
+  return false;
+}
+function handleFieldNav(e, qid, idx, columnType){
+  const el = e.currentTarget;
+  const normIdx = (idx === undefined) ? null : idx;
+  if(e.key === 'ArrowUp'){
+    if(isCaretOnFirstLine(el)){
+      e.preventDefault();
+      if(normIdx === null){
+        moveQuestionVertical(qid, columnType, -1);
+      } else {
+        goBackwardFromField(qid, normIdx, columnType);
+      }
+    }
+  } else if(e.key === 'ArrowDown'){
+    if(isCaretOnLastLine(el)){
+      e.preventDefault();
+      if(normIdx === null){
+        moveQuestionVertical(qid, columnType, 1);
+      } else {
+        goForwardFromField(qid, normIdx, columnType);
+      }
+    }
+  } else if(e.key === 'ArrowLeft'){
+    if(getCaretOffset(el) === el.textContent.length){
+      const moved = goForwardFromField(qid, normIdx, columnType);
+      if(moved) e.preventDefault();
+    }
+  } else if(e.key === 'ArrowRight'){
+    if(getCaretOffset(el) === 0){
+      const moved = goBackwardFromField(qid, normIdx, columnType);
+      if(moved) e.preventDefault();
+    }
+  }
+}
+
+// ניווט בחצים בתוך פריטי ה"המשך שרשור" (נייט/מקליד/ה שנוספו אחרי הנייט הראשון) -
+// מזיז אחורה/קדימה בשרשור עצמו, ובקצוות ממשיך אל הנייט/תגובה שלפניו או אל השורה הבאה שאחריו
+function focusExtraOrFallback(qid, idx, subIdx, atStart){
+  const el = document.querySelector(`[data-qid="${qid}"][data-col="extra"][data-idx="${idx}"][data-subidx="${subIdx}"]`);
+  if(el){
+    el.focus();
+    if(atStart) placeCaretAtStart(el); else placeCaretAtEnd(el);
+    return true;
+  }
+  return false;
+}
+function handleExtraNav(e, qid, idx, subIdx, extraCount){
+  const el = e.currentTarget;
+  const goBackward = () => {
+    if(subIdx > 0) return focusExtraOrFallback(qid, idx, subIdx - 1, false);
+    const nightEl = document.querySelector(`[data-qid="${qid}"][data-col="commentNight"][data-idx="${idx}"]`);
+    if(nightEl){ nightEl.focus(); placeCaretAtEnd(nightEl); return true; }
+    const commentEl = document.querySelector(`[data-qid="${qid}"][data-col="comment"][data-idx="${idx}"]`);
+    if(commentEl){ commentEl.focus(); placeCaretAtEnd(commentEl); return true; }
+    return false;
+  };
+  const goForward = () => {
+    if(subIdx < extraCount - 1) return focusExtraOrFallback(qid, idx, subIdx + 1, true);
+    return focusForwardFromRowEnd(qid, idx);
+  };
+  if(e.key === 'ArrowUp'){
+    if(isCaretOnFirstLine(el)){
+      e.preventDefault();
+      goBackward();
+    }
+  } else if(e.key === 'ArrowDown'){
+    if(isCaretOnLastLine(el)){
+      e.preventDefault();
+      goForward();
+    }
+  } else if(e.key === 'ArrowLeft'){
+    if(getCaretOffset(el) === el.textContent.length){
+      e.preventDefault();
+      goForward();
+    }
+  } else if(e.key === 'ArrowRight'){
+    if(getCaretOffset(el) === 0){
+      e.preventDefault();
+      goBackward();
+    }
+  }
+}
+
+function focusPrevCategoryEnd(idx){
+  if(idx < 0) return;
+  const cat = state.categories[idx];
+  if(cat.questions.length > 0){
+    focusFieldEnd(cat.questions[cat.questions.length - 1].id, 'text');
+  } else {
+    focusPrevCategoryEnd(idx - 1);
+  }
+}
+
+function handleAddInputNav(e, catId){
+  if(e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+  e.preventDefault();
+  const catIndex = state.categories.findIndex(c => c.id === catId);
+  if(e.key === 'ArrowUp'){
+    const cat = state.categories[catIndex];
+    if(cat.questions.length > 0){
+      focusFieldEnd(cat.questions[cat.questions.length - 1].id, 'text');
+    } else {
+      focusPrevCategoryEnd(catIndex - 1);
+    }
+  } else {
+    if(catIndex < state.categories.length - 1){
+      const nextCat = state.categories[catIndex + 1];
+      if(nextCat.questions.length > 0){
+        focusFieldEnd(nextCat.questions[0].id, 'text');
+      } else {
+        const nextInput = document.getElementById('add-input-' + nextCat.id);
+        if(nextInput) nextInput.focus();
+      }
+    }
+  }
+}
+
+function insertLineBreakAtCaret(){
+  document.execCommand('insertLineBreak', false, null);
+}
+
+function attachImagePaste(el, onChange){
+  el.addEventListener('paste', (e) => {
+    const items = (e.clipboardData && e.clipboardData.items) || [];
+    let imageItem = null;
+    for(let i = 0; i < items.length; i++){
+      if(items[i].type && items[i].type.indexOf('image/') === 0){
+        imageItem = items[i];
+        break;
+      }
+    }
+    e.preventDefault();
+    if(imageItem){
+      const file = imageItem.getAsFile();
+      const reader = new FileReader();
+      reader.onload = () => {
+        document.execCommand('insertImage', false, reader.result);
+        // נותנים לתמונה שהודבקה גודל התחלתי סביר, כדי שלא תיכנס בגודל המקורי (לרוב ענק מדי)
+        const imgs = el.querySelectorAll('img[src="' + reader.result + '"]');
+        const newImg = imgs[imgs.length - 1];
+        if(newImg && !newImg.style.width){
+          newImg.onload = () => {
+            const naturalW = newImg.naturalWidth || 320;
+            newImg.style.width = Math.min(naturalW, 320) + 'px';
+          };
+          if(newImg.complete && newImg.naturalWidth){
+            newImg.style.width = Math.min(newImg.naturalWidth, 320) + 'px';
+          }
+        }
+        if(onChange) onChange();
+      };
+      reader.readAsDataURL(file);
+    } else {
+      const text = (e.clipboardData && e.clipboardData.getData('text/plain')) || '';
+      document.execCommand('insertText', false, text);
+      if(onChange) onChange();
+    }
+  });
+}
+
+function uid(prefix){
+  return prefix + '_' + Math.random().toString(36).slice(2,9);
+}
+
+// פותח כלי קטן לשליטה בגודל תמונה שהודבקה בתוך שאלה/נייט
+// שומר את השינוי בגודל תמונה - מפעיל את מנגנון השמירה הרגיל של השדה שבו התמונה נמצאת
+function persistImageChange(img){
+  const editable = img.closest('[contenteditable="true"]');
+  if(editable) editable.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+function buildImageSizeRow(labelText, img, styleProp, minPx, maxPx, defaultPx){
+  const row = document.createElement('div');
+  row.className = 'image-resize-row';
+
+  const label = document.createElement('span');
+  label.innerText = labelText;
+  row.appendChild(label);
+
+  const currentVal = parseInt(img.style[styleProp]) || defaultPx;
+
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.min = String(minPx);
+  slider.max = String(maxPx);
+  slider.value = String(currentVal);
+
+  const valLabel = document.createElement('span');
+  valLabel.className = 'image-resize-percent';
+  valLabel.innerText = currentVal + 'px';
+
+  slider.oninput = () => {
+    img.style[styleProp] = slider.value + 'px';
+    if(styleProp === 'width') img.style.maxWidth = 'none';
+    if(styleProp === 'height') img.style.maxHeight = 'none';
+    valLabel.innerText = slider.value + 'px';
+  };
+  slider.onchange = () => persistImageChange(img);
+
+  row.appendChild(slider);
+  row.appendChild(valLabel);
+  return row;
+}
+
+// פותח כלי קטן לשליטה עצמאית ברוחב ובגובה של תמונה שהודבקה בתוך שאלה/נייט
+function openImageResizePopup(img){
+  closeImageResizePopup();
+  activeResizeImg = img;
+
+  const popup = document.createElement('div');
+  popup.className = 'image-resize-popup';
+  popup.id = 'imageResizePopup';
+
+  const naturalW = img.naturalWidth || 200;
+  const naturalH = img.naturalHeight || 150;
+  const defaultW = Math.round(img.getBoundingClientRect().width) || naturalW || 200;
+  const defaultH = Math.round(img.getBoundingClientRect().height) || naturalH || 150;
+
+  popup.appendChild(buildImageSizeRow('רוחב:', img, 'width', 30, 1200, defaultW));
+  popup.appendChild(buildImageSizeRow('גובה:', img, 'height', 30, 1000, defaultH));
+
+  document.body.appendChild(popup);
+
+  const rect = img.getBoundingClientRect();
+  let top = rect.top - popup.offsetHeight - 8;
+  if(top < 4) top = rect.bottom + 8;
+  let left = rect.left;
+  const maxLeft = window.innerWidth - popup.offsetWidth - 8;
+  if(left > maxLeft) left = Math.max(4, maxLeft);
+  if(left < 4) left = 4;
+  popup.style.top = top + 'px';
+  popup.style.left = left + 'px';
+}
+
+function closeImageResizePopup(){
+  const popup = document.getElementById('imageResizePopup');
+  if(popup){
+    // שומרים את הגודל הסופי גם אם המשתמש לא הזיז את הסליידר בפעם האחרונה
+    if(activeResizeImg) persistImageChange(activeResizeImg);
+    popup.remove();
+  }
+  activeResizeImg = null;
+}
+
+// בונה מחרוזת תיעוד בסוגריים - מי רשם / טיפל / מחק את הפריט, לשימוש גם בלוח וגם בהיסטוריה
+function formatAttribution(q){
+  const parts = [];
+  if(q.createdBy) parts.push('נרשם ע"י ' + q.createdBy);
+  if(q.doneBy) parts.push('טופל ע"י ' + q.doneBy);
+  if(q.deletedBy) parts.push('נמחק ע"י ' + q.deletedBy);
+  if(parts.length === 0) return '';
+  return '(' + parts.join(' • ') + ')';
+}
+
+function addCategory(inputId){
+  const input = document.getElementById(inputId || 'new-cat-input');
+  if(!input) return;
+  const title = input.value.trim();
+  if(!title) return;
+  state.categories.push({id: uid('cat'), title: title, questions: []});
+  input.value = '';
+  render();
+  saveStateToFirebase();
+}
+
+let pendingDeleteCatId = null;
+
+function moveCategoryUp(catId){
+  const idx = state.categories.findIndex(c => c.id === catId);
+  if(idx <= 0) return;
+  const tmp = state.categories[idx - 1];
+  state.categories[idx - 1] = state.categories[idx];
+  state.categories[idx] = tmp;
+  render();
+  saveStateToFirebase();
+}
+
+function moveCategoryDown(catId){
+  const idx = state.categories.findIndex(c => c.id === catId);
+  if(idx === -1 || idx >= state.categories.length - 1) return;
+  const tmp = state.categories[idx + 1];
+  state.categories[idx + 1] = state.categories[idx];
+  state.categories[idx] = tmp;
+  render();
+  saveStateToFirebase();
+}
+
+function deleteCategory(catId){
+  const cat = state.categories.find(c => c.id === catId);
+  if(cat && cat.permanent) return;
+  pendingDeleteCatId = catId;
+  render();
+}
+
+function confirmDeleteCategory(){
+  if(!pendingDeleteCatId) return;
+  const cat = state.categories.find(c => c.id === pendingDeleteCatId);
+  if(cat) cat.questions.forEach(q => archiveDeletedQuestion(cat, q));
+  state.categories = state.categories.filter(c => c.id !== pendingDeleteCatId);
+  pendingDeleteCatId = null;
+  render();
+  saveStateToFirebase();
+}
+
+function cancelDeleteCategory(){
+  pendingDeleteCatId = null;
+  render();
+}
+
+let pendingClear = null;
+
+function clearQuestions(catId){
+  const cat = state.categories.find(c => c.id === catId);
+  if(!cat || cat.questions.length === 0) return;
+
+  let mainCounter = 0;
+  const notDoneNumbers = [];
+  cat.questions.forEach(q => {
+    if(!q.sub) mainCounter++;
+    if(!q.done){
+      notDoneNumbers.push(q.sub ? (mainCounter + '+') : String(mainCounter));
+    }
+  });
+
+  if(notDoneNumbers.length > 0){
+    pendingClear = {catId, notDoneNumbers};
+    render();
+    return;
+  }
+
+  cat.questions.forEach(q => archiveDeletedQuestion(cat, q));
+  cat.questions = [];
+  render();
+  saveStateToFirebase();
+}
+
+function confirmClearQuestions(){
+  if(!pendingClear) return;
+  const cat = state.categories.find(c => c.id === pendingClear.catId);
+  pendingClear = null;
+  if(cat){
+    cat.questions.forEach(q => archiveDeletedQuestion(cat, q));
+    cat.questions = [];
+  }
+  render();
+  saveStateToFirebase();
+}
+
+function cancelClearQuestions(){
+  pendingClear = null;
+  render();
+}
+
+// בודק אם שאלה ריקה לגמרי - בלי טקסט, בלי תמונה, בלי תשובה, בלי אף תגובה/נייט/פריט המשך
+function isQuestionEmpty(q){
+  const temp = document.createElement('div');
+  temp.innerHTML = q.text || '';
+  const hasImage = !!temp.querySelector('img');
+  const hasText = temp.textContent.trim().length > 0;
+  if(hasText || hasImage) return false;
+  if(q.answer && q.answer.trim() !== '') return false;
+  if(q.comments && q.comments.some(c => c && c.trim() !== '')) return false;
+  if(q.commentNights && q.commentNights.some(c => c && c.trim() !== '')) return false;
+  if(q.commentExtra && q.commentExtra.some(arr => arr && arr.some(item => item && item.text && item.text.trim() !== ''))) return false;
+  return true;
+}
+
+// אם השאלה ריקה לגמרי - מוחק אותה מהמערך (בלי בקשת אישור, כמו שקורה כבר לתגובות/נייטים ריקים)
+function deleteQuestionIfEmpty(catId, qId){
+  const cat = state.categories.find(c => c.id === catId);
+  if(!cat) return false;
+  const q = cat.questions.find(q => q.id === qId);
+  if(!q || !isQuestionEmpty(q)) return false;
+  cat.questions = cat.questions.filter(qq => qq.id !== qId);
+  render();
+  saveStateToFirebase();
+  return true;
+}
+
+function addQuestion(catId, html){
+  const cat = state.categories.find(c => c.id === catId);
+  if(!cat) return;
+  const temp = document.createElement('div');
+  temp.innerHTML = html || '';
+  const hasImage = !!temp.querySelector('img');
+  const hasText = temp.textContent.trim().length > 0;
+  if(!hasText && !hasImage) return;
+  cat.questions.push({id: uid('q'), text: html || '', answer: '', sub: false, done: false, comments: [], textMark: null, commentMarks: [], commentNights: [], commentNightsOn: [], commentExtra: [], createdBy: currentUser || null});
+  render();
+  saveStateToFirebase();
+}
+
+function toggleIndent(catId, qId){
+  const cat = state.categories.find(c => c.id === catId);
+  const q = cat.questions.find(q => q.id === qId);
+  q.sub = !q.sub;
+  render();
+  saveStateToFirebase();
+}
+
+function addSubQuestionAfter(catId, qId){
+  const cat = state.categories.find(c => c.id === catId);
+  const idx = cat.questions.findIndex(q => q.id === qId);
+  if(idx === -1) return;
+  const newQ = {id: uid('q'), text: '', answer: '', sub: true, done: false, comments: [], textMark: null, commentMarks: [], commentNights: [], commentNightsOn: [], commentExtra: [], createdBy: currentUser || null};
+  cat.questions.splice(idx + 1, 0, newQ);
+  lastFocusNewQid = newQ.id;
+  render();
+  saveStateToFirebase();
+}
+
+function toggleDone(catId, qId){
+  const cat = state.categories.find(c => c.id === catId);
+  const q = cat.questions.find(q => q.id === qId);
+  q.done = !q.done;
+  q.doneBy = q.done ? (currentUser || null) : null;
+  render();
+  saveStateToFirebase();
+}
+
+let pendingDeleteQid = null;
+
+function deleteQuestion(catId, qId){
+  const cat = state.categories.find(c => c.id === catId);
+  const q = cat.questions.find(q => q.id === qId);
+  if(q && !q.done){
+    pendingDeleteQid = qId;
+    render();
+    return;
+  }
+  if(q) archiveDeletedQuestion(cat, q);
+  cat.questions = cat.questions.filter(q => q.id !== qId);
+  render();
+  saveStateToFirebase();
+}
+
+function confirmDeleteQuestion(catId, qId){
+  const cat = state.categories.find(c => c.id === catId);
+  const q = cat ? cat.questions.find(q => q.id === qId) : null;
+  pendingDeleteQid = null;
+  if(cat && q) archiveDeletedQuestion(cat, q);
+  if(cat) cat.questions = cat.questions.filter(q => q.id !== qId);
+  render();
+  saveStateToFirebase();
+}
+
+function cancelDeleteQuestion(){
+  pendingDeleteQid = null;
+  render();
+}
+
+function updateText(catId, qId, field, value){
+  const cat = state.categories.find(c => c.id === catId);
+  const q = cat.questions.find(q => q.id === qId);
+  q[field] = value;
+  saveStateToFirebase();
+}
+
+function addComment(catId, qId, openNightToo){
+  const cat = state.categories.find(c => c.id === catId);
+  const q = cat.questions.find(q => q.id === qId);
+  if(!q.comments) q.comments = [];
+  if(!q.commentMarks) q.commentMarks = [];
+  if(!q.commentNights) q.commentNights = [];
+  if(!q.commentNightsOn) q.commentNightsOn = [];
+  if(!q.commentExtra) q.commentExtra = [];
+  q.comments.push('');
+  q.commentMarks.push(null);
+  q.commentNights.push('');
+  q.commentNightsOn.push(!!openNightToo);
+  q.commentExtra.push([]);
+  const newIdx = q.comments.length - 1;
+  if(openNightToo){
+    lastFocusNightQid = qId;
+    lastFocusNightIdx = newIdx;
+  } else {
+    lastFocusCommentQid = qId;
+    lastFocusCommentIdx = newIdx;
+  }
+  render();
+  saveStateToFirebase();
+}
+
+function updateComment(catId, qId, idx, value){
+  const cat = state.categories.find(c => c.id === catId);
+  const q = cat.questions.find(q => q.id === qId);
+  q.comments[idx] = value;
+  saveStateToFirebase();
+}
+
+function updateCommentNight(catId, qId, idx, value){
+  const cat = state.categories.find(c => c.id === catId);
+  const q = cat.questions.find(q => q.id === qId);
+  if(!q.commentNights) q.commentNights = [];
+  q.commentNights[idx] = value;
+  saveStateToFirebase();
+}
+
+function deleteCommentNight(catId, qId, idx){
+  const cat = state.categories.find(c => c.id === catId);
+  const q = cat.questions.find(q => q.id === qId);
+  if(!q.commentNights) q.commentNights = [];
+  if(!q.commentNightsOn) q.commentNightsOn = [];
+  q.commentNights[idx] = '';
+  q.commentNightsOn[idx] = false;
+  render();
+  saveStateToFirebase();
+}
+
+function deleteComment(catId, qId, idx){
+  const cat = state.categories.find(c => c.id === catId);
+  const q = cat.questions.find(q => q.id === qId);
+  q.comments.splice(idx, 1);
+  if(q.commentMarks) q.commentMarks.splice(idx, 1);
+  if(q.commentNights) q.commentNights.splice(idx, 1);
+  if(q.commentNightsOn) q.commentNightsOn.splice(idx, 1);
+  if(q.commentExtra) q.commentExtra.splice(idx, 1);
+  render();
+  saveStateToFirebase();
+}
+
+let lastFocusExtraQid = null;
+let lastFocusExtraIdx = null;
+let lastFocusExtraSub = null;
+
+// מוסיף פריט נוסף (נייט או מקליד/ה) להמשך השרשור של תגובה מסוימת.
+// אם עדיין אין נייט לתגובה הזו ואין אף פריט המשך אחר - "נייט" ממלא את משבצת הנייט הראשונה (כמו קודם).
+// בכל מקרה אחר - מתווסף פריט חדש בסוף השרשור, כדי שתמיד יתווסף אחרי הפריט האחרון שכבר קיים ולא לפניו.
+function addRowThreadItem(catId, qId, idx, type){
+  const cat = state.categories.find(c => c.id === catId);
+  const q = cat.questions.find(q => q.id === qId);
+  if(!q.commentNightsOn) q.commentNightsOn = [];
+  if(!q.commentNights) q.commentNights = [];
+  if(!q.commentExtra) q.commentExtra = [];
+  while(q.commentExtra.length <= idx) q.commentExtra.push([]);
+  if(!q.commentExtra[idx]) q.commentExtra[idx] = [];
+
+  const hasExtraAlready = q.commentExtra[idx].length > 0;
+
+  if(type === 'night' && !q.commentNightsOn[idx] && !hasExtraAlready){
+    q.commentNightsOn[idx] = true;
+    lastFocusNightQid = qId;
+    lastFocusNightIdx = idx;
+  } else {
+    q.commentExtra[idx].push({id: uid('ex'), type: type, text: ''});
+    lastFocusExtraQid = qId;
+    lastFocusExtraIdx = idx;
+    lastFocusExtraSub = q.commentExtra[idx].length - 1;
+  }
+  render();
+  saveStateToFirebase();
+}
+
+function updateCommentExtra(catId, qId, idx, subIdx, value){
+  const cat = state.categories.find(c => c.id === catId);
+  const q = cat.questions.find(q => q.id === qId);
+  if(!q.commentExtra || !q.commentExtra[idx] || !q.commentExtra[idx][subIdx]) return;
+  q.commentExtra[idx][subIdx].text = value;
+  saveStateToFirebase();
+}
+
+function deleteCommentExtra(catId, qId, idx, subIdx){
+  const cat = state.categories.find(c => c.id === catId);
+  const q = cat.questions.find(q => q.id === qId);
+  if(!q.commentExtra || !q.commentExtra[idx]) return;
+  q.commentExtra[idx].splice(subIdx, 1);
+  render();
+  saveStateToFirebase();
+}
+
+const MARK_COLORS = ['cyan', 'green', 'pink', 'purple', 'gray', 'yellow', 'red', 'brown'];
+let openMarkPopup = null;
+let openAddCommentPopup = null;
+let openRowAddPopup = null;
+let openQuestionMenu = null;
+let activeResizeImg = null;
+
+function rowAddPopupKey(qId, idx){
+  return qId + '|' + idx;
+}
+
+function markPopupKey(qId, target, commentIdx, extraSubIdx){
+  return qId + '|' + target + '|' + (commentIdx === null || commentIdx === undefined ? '' : commentIdx) + '|' + (extraSubIdx === null || extraSubIdx === undefined ? '' : extraSubIdx);
+}
+
+// כפתור מאוחד אחד לשאלה: לחיצה פותחת תפריט נפתח למטה עם "הוסף סעיף" ושורת צבעי מרקר
+function buildQuestionMenu(catId, qId, activeColor, showMarker){
+  const wrap = document.createElement('span');
+  wrap.className = 'question-menu';
+
+  const key = 'qmenu-' + qId;
+  const isOpen = openQuestionMenu === key;
+
+  const menuBtn = document.createElement('button');
+  menuBtn.className = 'question-menu-btn' + (showMarker && activeColor ? ' dot-' + activeColor : '');
+  menuBtn.innerText = '+';
+  menuBtn.title = showMarker ? 'הוסף תת-סעיף / סמן במרקר' : 'הוסף תת-סעיף';
+  menuBtn.onclick = () => {
+    openQuestionMenu = isOpen ? null : key;
+    render();
+  };
+  wrap.appendChild(menuBtn);
+
+  if(isOpen){
+    const dropdown = document.createElement('div');
+    dropdown.className = 'question-menu-dropdown';
+
+    if(showMarker){
+      // אופציה ראשונה: הכפתור הרגיל של המרקר (פותח את הפלטה שלו כרגיל בלחיצה)
+      const markRow = document.createElement('div');
+      markRow.className = 'question-menu-row';
+      markRow.appendChild(buildMarkTools(catId, qId, 'text', activeColor, null));
+      dropdown.appendChild(markRow);
+    }
+
+    // הוספת תת-סעיף
+    const addOpt = document.createElement('button');
+    addOpt.className = 'question-menu-add';
+    addOpt.innerText = 'תת-סעיף';
+    addOpt.onclick = () => {
+      openQuestionMenu = null;
+      addSubQuestionAfter(catId, qId);
+    };
+    dropdown.appendChild(addOpt);
+
+    wrap.appendChild(dropdown);
+  }
+
+  return wrap;
+}
+
+function buildMarkTools(catId, qId, target, activeColor, commentIdx, extraSubIdx){
+  const wrap = document.createElement('span');
+  wrap.className = 'mark-tools';
+
+  const key = markPopupKey(qId, target, commentIdx, extraSubIdx);
+  const isOpen = openMarkPopup === key;
+
+  const penBtn = document.createElement('button');
+  penBtn.className = 'mark-pen' + (activeColor ? ' mark-pen-active' : '');
+  penBtn.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.37 2.63 14 7l-1.59-1.59a2 2 0 0 0-2.82 0L8 6l10 10 1.41-1.59a2 2 0 0 0 0-2.82L18 10l4.37-4.37a2.12 2.12 0 1 0-3-3z"></path><path d="M9 8c-2 3-4 3.5-7 4l8 10c2-1 6-5 6-7"></path></svg><span class="mark-pen-bar' + (activeColor ? ' dot-' + activeColor : '') + '"></span>';
+  penBtn.title = 'סמן במרקר';
+  penBtn.onclick = () => {
+    openMarkPopup = isOpen ? null : key;
+    render();
+  };
+  wrap.appendChild(penBtn);
+
+  if(isOpen){
+    const palette = document.createElement('span');
+    palette.className = 'mark-palette';
+
+    const clearDot = document.createElement('button');
+    clearDot.className = 'mark-dot mark-dot-clear' + (!activeColor ? ' active' : '');
+    clearDot.title = 'נקי';
+    clearDot.innerHTML = '<svg viewBox="0 0 24 24" width="7" height="7" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M4 4 20 20M20 4 4 20"></path></svg>';
+    clearDot.onclick = () => {
+      openMarkPopup = null;
+      clearMark(catId, qId, target, commentIdx, extraSubIdx);
+    };
+    palette.appendChild(clearDot);
+
+    MARK_COLORS.forEach(color => {
+      const dot = document.createElement('button');
+      dot.className = 'mark-dot dot-' + color + (activeColor === color ? ' active' : '');
+      dot.title = color;
+      dot.onclick = () => {
+        openMarkPopup = null;
+        toggleMark(catId, qId, target, color, commentIdx, extraSubIdx);
+      };
+      palette.appendChild(dot);
+    });
+    wrap.appendChild(palette);
+  }
+
+  return wrap;
+}
+
+function clearMark(catId, qId, target, commentIdx, extraSubIdx){
+  const cat = state.categories.find(c => c.id === catId);
+  const q = cat.questions.find(q => q.id === qId);
+  if(target === 'text'){
+    q.textMark = null;
+  } else if(target === 'comment'){
+    if(!q.commentMarks) q.commentMarks = [];
+    q.commentMarks[commentIdx] = null;
+  } else if(target === 'extra'){
+    if(q.commentExtra && q.commentExtra[commentIdx] && q.commentExtra[commentIdx][extraSubIdx]){
+      q.commentExtra[commentIdx][extraSubIdx].mark = null;
+    }
+  }
+  render();
+  saveStateToFirebase();
+}
+
+function toggleMark(catId, qId, target, color, commentIdx, extraSubIdx){
+  const cat = state.categories.find(c => c.id === catId);
+  const q = cat.questions.find(q => q.id === qId);
+  if(target === 'text'){
+    q.textMark = (q.textMark === color) ? null : color;
+  } else if(target === 'comment'){
+    if(!q.commentMarks) q.commentMarks = [];
+    q.commentMarks[commentIdx] = (q.commentMarks[commentIdx] === color) ? null : color;
+  } else if(target === 'extra'){
+    if(q.commentExtra && q.commentExtra[commentIdx] && q.commentExtra[commentIdx][extraSubIdx]){
+      const item = q.commentExtra[commentIdx][extraSubIdx];
+      item.mark = (item.mark === color) ? null : color;
+    }
+  }
+  render();
+  saveStateToFirebase();
+}
+
+function updateCatTitle(catId, value){
+  const cat = state.categories.find(c => c.id === catId);
+  cat.title = value;
+  saveStateToFirebase();
+}
+
+
+function renderBoard(){
+  const board = document.getElementById('board');
+  board.innerHTML = '';
+  navOrder = [];
+  flatNav = [];
+  questionNav = [];
+
+  state.categories.forEach((cat, catIndex) => {
+    const catDiv = document.createElement('div');
+    catDiv.className = 'category';
+
+    // header
+    const header = document.createElement('div');
+    header.className = 'category-header';
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'category-title';
+    titleEl.contentEditable = true;
+    titleEl.innerText = cat.title;
+    titleEl.oninput = () => updateCatTitle(cat.id, titleEl.innerText);
+    header.appendChild(titleEl);
+
+    if(catIndex !== 0){
+      const moveUpBtn = document.createElement('button');
+      moveUpBtn.className = 'move-cat-btn';
+      moveUpBtn.innerText = '△';
+      moveUpBtn.title = 'הזז קטגוריה למעלה';
+      moveUpBtn.onclick = () => moveCategoryUp(cat.id);
+      header.appendChild(moveUpBtn);
+    }
+
+    if(catIndex !== state.categories.length - 1){
+      const moveDownBtn = document.createElement('button');
+      moveDownBtn.className = 'move-cat-btn';
+      moveDownBtn.innerText = '▽';
+      moveDownBtn.title = 'הזז קטגוריה למטה';
+      moveDownBtn.onclick = () => moveCategoryDown(cat.id);
+      header.appendChild(moveDownBtn);
+    }
+
+    const delCatBtn = document.createElement('button');
+    delCatBtn.className = 'icon-btn del-cat icon-btn-broom';
+    delCatBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="13" height="13">
+  <defs>
+    <linearGradient id="handleGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8B4513" />
+      <stop offset="50%" stop-color="#A0522D" />
+      <stop offset="100%" stop-color="#5C3A21" />
+    </linearGradient>
+    <linearGradient id="bristleGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F4D03F" />
+      <stop offset="50%" stop-color="#F1C40F" />
+      <stop offset="100%" stop-color="#B7950B" />
+    </linearGradient>
+    <linearGradient id="bandGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#2ECC71" />
+      <stop offset="50%" stop-color="#27AE60" />
+      <stop offset="100%" stop-color="#1E8449" />
+    </linearGradient>
+    <filter id="dropShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="2" dy="8" stdDeviation="6" flood-color="#000000" flood-opacity="0.15" />
+    </filter>
+  </defs>
+  <g filter="url(#dropShadow)">
+    <g transform="rotate(35 250 250)">
+      <path d="M 235 260 C 195 330, 95 400, 65 445 C 165 490, 335 490, 435 445 C 405 400, 305 330, 265 260 Z" fill="#B7950B" />
+      <path d="M 238 260 C 200 330, 110 400, 80 440 C 175 480, 325 480, 420 440 C 390 400, 300 330, 262 260 Z" fill="url(#bristleGrad)" />
+      <g stroke="#9C640C" stroke-linecap="round" opacity="0.4" stroke-width="2">
+        <path d="M 245 270 Q 180 345 80 435" />
+        <path d="M 247 270 Q 200 345 125 440" />
+        <path d="M 248 270 Q 220 345 170 445" />
+        <path d="M 250 270 Q 235 350 215 448" />
+        <path d="M 250 270 Q 250 355 250 452" />
+        <path d="M 250 270 Q 265 350 285 448" />
+        <path d="M 252 270 Q 280 345 330 445" />
+        <path d="M 253 270 Q 300 345 375 440" />
+        <path d="M 255 270 Q 320 345 420 435" />
+      </g>
+      <path d="M 80 440 Q 105 460 130 442 Q 155 458 180 445 Q 205 465 230 448 Q 255 463 280 447 Q 305 462 330 446 Q 355 460 380 444 Q 405 458 420 440 L 435 445 C 335 490, 165 490, 65 445 Z" fill="#7A5210" />
+      <rect x="238" y="10" width="24" height="260" rx="12" fill="url(#handleGrad)" />
+      <path d="M 242 15 L 242 265" stroke="#FFF" stroke-opacity="0.25" stroke-width="4" stroke-linecap="round" />
+      <ellipse cx="250" cy="15" rx="14" ry="10" fill="#A0522D" />
+      <ellipse cx="250" cy="13" rx="11" ry="8" fill="#8B4513" />
+      <rect x="228" y="253" width="44" height="18" rx="5" fill="url(#bandGrad)" />
+      <rect x="228" y="256" width="44" height="4" fill="#32CD32" opacity="0.6" />
+      <rect x="220" y="280" width="60" height="15" rx="4" fill="url(#bandGrad)" />
+      <rect x="220" y="283" width="60" height="3" fill="#32CD32" opacity="0.6" />
+      <ellipse cx="250" cy="300" rx="30" ry="6" fill="#000" opacity="0.2" />
+    </g>
+  </g>`;
+    delCatBtn.title = 'מוחק את כל השאלות בקטגוריה זו (הקטגוריה עצמה נשארת)';
+    delCatBtn.onclick = () => clearQuestions(cat.id);
+    delCatBtn.onmouseenter = () => catDiv.classList.add('row-del-hover');
+    delCatBtn.onmouseleave = () => catDiv.classList.remove('row-del-hover');
+    header.appendChild(delCatBtn);
+
+    if(!cat.permanent){
+      const delWholeCatBtn = document.createElement('button');
+      delWholeCatBtn.className = 'icon-btn del-cat';
+      delWholeCatBtn.innerText = '🗑';
+      delWholeCatBtn.title = 'מוחק את הקטגוריה כולה, כולל כל השאלות שבה';
+      delWholeCatBtn.onclick = () => deleteCategory(cat.id);
+      delWholeCatBtn.onmouseenter = () => catDiv.classList.add('row-del-hover');
+      delWholeCatBtn.onmouseleave = () => catDiv.classList.remove('row-del-hover');
+      header.appendChild(delWholeCatBtn);
+    }
+
+    catDiv.appendChild(header);
+
+    if(pendingDeleteCatId === cat.id){
+      const catBanner = document.createElement('div');
+      catBanner.className = 'clear-confirm-banner';
+
+      const catMsg = document.createElement('span');
+      catMsg.innerText = 'למחוק את הקטגוריה "' + cat.title + '" כולל כל השאלות שבה? פעולה זו אינה הפיכה.';
+      catBanner.appendChild(catMsg);
+
+      const catBtnRow = document.createElement('span');
+      catBtnRow.className = 'clear-confirm-btns';
+
+      const catYesBtn = document.createElement('button');
+      catYesBtn.innerText = 'כן, מחק קטגוריה';
+      catYesBtn.onclick = confirmDeleteCategory;
+      catBtnRow.appendChild(catYesBtn);
+
+      const catNoBtn = document.createElement('button');
+      catNoBtn.innerText = 'ביטול';
+      catNoBtn.onclick = cancelDeleteCategory;
+      catBtnRow.appendChild(catNoBtn);
+
+      catBanner.appendChild(catBtnRow);
+      catDiv.appendChild(catBanner);
+    }
+
+    if(pendingClear && pendingClear.catId === cat.id){
+      const banner = document.createElement('div');
+      banner.className = 'clear-confirm-banner';
+
+      const msg = document.createElement('span');
+      msg.innerText = 'השאלות הבאות לא סומנו כטופלו: ' + pendingClear.notDoneNumbers.join(', ') + '. למחוק בכל זאת את כל השאלות?';
+      banner.appendChild(msg);
+
+      const btnRow = document.createElement('span');
+      btnRow.className = 'clear-confirm-btns';
+
+      const yesBtn = document.createElement('button');
+      yesBtn.innerText = 'כן, מחק בכל זאת';
+      yesBtn.onclick = confirmClearQuestions;
+      btnRow.appendChild(yesBtn);
+
+      const noBtn = document.createElement('button');
+      noBtn.innerText = 'ביטול';
+      noBtn.onclick = cancelClearQuestions;
+      btnRow.appendChild(noBtn);
+
+      banner.appendChild(btnRow);
+      catDiv.appendChild(banner);
+    }
+
+    // questions
+    let mainCounter = 0;
+    cat.questions.forEach(q => {
+      if(!q.sub) mainCounter++;
+      navOrder.push(q.id);
+      flatNav.push({qid: q.id, idx: null});
+      questionNav.push({qid: q.id});
+
+      const qDiv = document.createElement('div');
+      qDiv.className = 'question-block' + (q.sub ? ' sub' : '') + (q.done ? ' done' : '');
+
+      const isNightCat = cat.mode === 'night';
+
+      {
+        const indentBtn = document.createElement('button');
+        indentBtn.className = 'btn-indent btn-square';
+        indentBtn.title = q.sub ? 'מבטל את התת-סעיף ומחזיר לשאלה ראשית' : 'הופך את השאלה הזו לתת-סעיף של השאלה שמעליה';
+        indentBtn.innerHTML = q.sub
+          ? '<svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"></path></svg>'
+          : '<svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M11 6l-6 6 6 6"></path></svg>';
+        indentBtn.onclick = () => toggleIndent(cat.id, q.id);
+        qDiv.appendChild(indentBtn);
+
+        // כפתור מאוחד אחד: פותח תפריט נפתח למטה עם "הוסף סעיף" וצבעי מרקר
+        qDiv.appendChild(buildQuestionMenu(cat.id, q.id, q.textMark, !isNightCat));
+      }
+
+      const numDiv = document.createElement('div');
+      numDiv.className = 'qnum';
+      numDiv.innerText = q.sub ? '+' : (mainCounter + '.');
+      qDiv.appendChild(numDiv);
+
+      const bodyDiv = document.createElement('div');
+      bodyDiv.className = 'qbody';
+
+      const textDiv = document.createElement('div');
+      textDiv.className = isNightCat ? 'answer' : ('qtext' + (q.textMark ? (' mark-' + q.textMark) : ''));
+      textDiv.contentEditable = true;
+      textDiv.setAttribute('contenteditable', 'true');
+      textDiv.setAttribute('data-placeholder', isNightCat ? 'נייט' : 'כתבי כאן את השאלה... (אפשר גם להדביק תמונה)');
+      textDiv.dataset.qid = q.id;
+      textDiv.dataset.col = 'text';
+      textDiv.innerHTML = q.text;
+      textDiv.oninput = () => updateText(cat.id, q.id, 'text', textDiv.innerHTML);
+      textDiv.onkeydown = (e) => handleFieldNav(e, q.id, null, 'primary');
+      textDiv.onblur = () => {
+        normalizeEmptyOnBlur(textDiv);
+        updateText(cat.id, q.id, 'text', textDiv.innerHTML);
+        deleteQuestionIfEmpty(cat.id, q.id);
+      };
+      attachImagePaste(textDiv, () => updateText(cat.id, q.id, 'text', textDiv.innerHTML));
+      bodyDiv.appendChild(textDiv);
+
+      if(!isNightCat){
+        const answerDiv = document.createElement('div');
+        answerDiv.className = 'answer';
+        answerDiv.contentEditable = true;
+        answerDiv.dataset.qid = q.id;
+        answerDiv.dataset.col = 'answer';
+        answerDiv.setAttribute('data-placeholder', 'נייט');
+        answerDiv.innerText = q.answer;
+        answerDiv.oninput = () => updateText(cat.id, q.id, 'answer', answerDiv.innerText);
+        answerDiv.onkeydown = (e) => handleFieldNav(e, q.id, null, 'secondary');
+        answerDiv.onblur = () => {
+          normalizeEmptyOnBlur(answerDiv);
+          updateText(cat.id, q.id, 'answer', answerDiv.innerText);
+          deleteQuestionIfEmpty(cat.id, q.id);
+        };
+        bodyDiv.appendChild(answerDiv);
+      }
+
+      (q.comments || []).forEach((commentText, idx) => {
+        flatNav.push({qid: q.id, idx});
+        const mark = (q.commentMarks && q.commentMarks[idx]) || null;
+        const rowHasNight = !!((q.commentNightsOn && q.commentNightsOn[idx]) || (q.commentNights && q.commentNights[idx]));
+        const rowHasExtra = !!(q.commentExtra && q.commentExtra[idx] && q.commentExtra[idx].length > 0);
+        const rowHasMore = rowHasNight || rowHasExtra;
+        const commentHasContent = commentText && commentText.trim() !== '';
+        const extraItems = (q.commentExtra && q.commentExtra[idx]) || [];
+        let lastTypistExtraIdx = -1;
+        extraItems.forEach((item, subIdx) => { if(item.type !== 'night') lastTypistExtraIdx = subIdx; });
+
+        // תא המקלידה הראשון מוצג רק אם יש בו תוכן, או שאין שום דבר אחר בשרשור (כדי שתמיד יהיה תא לכתוב בו).
+        // אם התוכן שלו נמחק אבל יש נייט/תגובות המשך - התא נעלם ורק הם נשארים.
+        if(commentHasContent || !rowHasMore){
+          const commentDiv = document.createElement('div');
+          commentDiv.className = 'comment' + (mark ? (' mark-' + mark) : '');
+          commentDiv.contentEditable = true;
+          commentDiv.setAttribute('data-placeholder', 'מקליד/ה...');
+          commentDiv.dataset.qid = q.id;
+          commentDiv.dataset.col = 'comment';
+          commentDiv.dataset.idx = idx;
+          commentDiv.innerText = commentText;
+          let commentHandledDelete = false;
+          commentDiv.oninput = () => {
+            if(commentHandledDelete) return;
+            const empty = commentDiv.textContent.trim() === '' && !commentDiv.querySelector('img');
+            if(empty && !rowHasMore){
+              commentHandledDelete = true;
+              deleteComment(cat.id, q.id, idx);
+            } else if(empty && rowHasMore){
+              commentHandledDelete = true;
+              q.comments[idx] = '';
+              saveStateToFirebase();
+              render();
+            } else {
+              updateComment(cat.id, q.id, idx, commentDiv.innerText);
+            }
+          };
+          commentDiv.onkeydown = (e) => handleFieldNav(e, q.id, idx, 'primary');
+          commentDiv.onblur = () => {
+            if(commentHandledDelete) return;
+            normalizeEmptyOnBlur(commentDiv);
+            const empty = commentDiv.textContent.trim() === '' && !commentDiv.querySelector('img');
+            if(empty && !rowHasMore){
+              commentHandledDelete = true;
+              deleteComment(cat.id, q.id, idx);
+            } else if(empty && rowHasMore){
+              commentHandledDelete = true;
+              q.comments[idx] = '';
+              saveStateToFirebase();
+              render();
+            } else {
+              updateComment(cat.id, q.id, idx, commentDiv.innerText);
+            }
+          };
+          bodyDiv.appendChild(commentDiv);
+
+          if(q.id === lastFocusCommentQid && idx === lastFocusCommentIdx){
+            requestAnimationFrame(() => {
+              commentDiv.focus();
+              placeCaretAtEnd(commentDiv);
+            });
+            lastFocusCommentQid = null;
+            lastFocusCommentIdx = null;
+          }
+        }
+
+        const nightOn = rowHasNight;
+        if(nightOn){
+          const nightDiv = document.createElement('div');
+          nightDiv.className = 'answer';
+          nightDiv.contentEditable = true;
+          nightDiv.setAttribute('data-placeholder', 'נייט');
+          nightDiv.dataset.qid = q.id;
+          nightDiv.dataset.col = 'commentNight';
+          nightDiv.dataset.idx = idx;
+          nightDiv.innerText = (q.commentNights && q.commentNights[idx]) || '';
+          let nightHandledDelete = false;
+          nightDiv.oninput = () => {
+            if(nightHandledDelete) return;
+            if(nightDiv.textContent.trim() === '' && !nightDiv.querySelector('img')){
+              nightHandledDelete = true;
+              deleteCommentNight(cat.id, q.id, idx);
+            } else {
+              updateCommentNight(cat.id, q.id, idx, nightDiv.innerText);
+            }
+          };
+          nightDiv.onkeydown = (e) => handleFieldNav(e, q.id, idx, 'secondary');
+          nightDiv.onblur = () => {
+            if(nightHandledDelete) return;
+            normalizeEmptyOnBlur(nightDiv);
+            if(nightDiv.textContent.trim() === '' && !nightDiv.querySelector('img')){
+              nightHandledDelete = true;
+              deleteCommentNight(cat.id, q.id, idx);
+            } else {
+              updateCommentNight(cat.id, q.id, idx, nightDiv.innerText);
+            }
+          };
+          bodyDiv.appendChild(nightDiv);
+
+          if(q.id === lastFocusNightQid && idx === lastFocusNightIdx){
+            requestAnimationFrame(() => {
+              nightDiv.focus();
+              placeCaretAtEnd(nightDiv);
+            });
+            lastFocusNightQid = null;
+            lastFocusNightIdx = null;
+          }
+        }
+
+        // המשך השרשור לתגובה הזו - פריטים נוספים (נייט/מקליד/ה) שנוספו אחרי הנייט הראשון
+        extraItems.forEach((item, subIdx) => {
+          const itemDiv = document.createElement('div');
+          itemDiv.className = item.type === 'night' ? 'answer' : ('comment' + (item.mark ? (' mark-' + item.mark) : ''));
+          itemDiv.contentEditable = true;
+          itemDiv.setAttribute('data-placeholder', item.type === 'night' ? 'נייט' : 'מקליד/ה...');
+          itemDiv.setAttribute('data-qid', q.id);
+          itemDiv.setAttribute('data-col', 'extra');
+          itemDiv.setAttribute('data-idx', idx);
+          itemDiv.setAttribute('data-subidx', subIdx);
+          itemDiv.innerText = item.text || '';
+          itemDiv.onkeydown = (e) => handleExtraNav(e, q.id, idx, subIdx, extraItems.length);
+          let extraHandledDelete = false;
+          itemDiv.oninput = () => {
+            if(extraHandledDelete) return;
+            if(itemDiv.textContent.trim() === '' && !itemDiv.querySelector('img')){
+              extraHandledDelete = true;
+              deleteCommentExtra(cat.id, q.id, idx, subIdx);
+            } else {
+              updateCommentExtra(cat.id, q.id, idx, subIdx, itemDiv.innerText);
+            }
+          };
+          itemDiv.onblur = () => {
+            if(extraHandledDelete) return;
+            normalizeEmptyOnBlur(itemDiv);
+            if(itemDiv.textContent.trim() === '' && !itemDiv.querySelector('img')){
+              extraHandledDelete = true;
+              deleteCommentExtra(cat.id, q.id, idx, subIdx);
+            } else {
+              updateCommentExtra(cat.id, q.id, idx, subIdx, itemDiv.innerText);
+            }
+          };
+          bodyDiv.appendChild(itemDiv);
+
+          if(q.id === lastFocusExtraQid && idx === lastFocusExtraIdx && subIdx === lastFocusExtraSub){
+            requestAnimationFrame(() => {
+              itemDiv.focus();
+              placeCaretAtEnd(itemDiv);
+            });
+            lastFocusExtraQid = null;
+            lastFocusExtraIdx = null;
+            lastFocusExtraSub = null;
+          }
+        });
+
+        // כפתור "+" להמשך השרשור - תמיד מיד אחרי הפריט האחרון בשרשור, כך שכל פריט חדש שנוסף "מקדם" אותו למקומו החדש בסוף
+        const isLastRow = idx === (q.comments.length - 1);
+        if(isLastRow){
+        const rowKey = rowAddPopupKey(q.id, idx);
+        const isRowPopupOpen = openRowAddPopup === rowKey;
+        const rowAddWrap = document.createElement('span');
+        rowAddWrap.style.display = 'inline-flex';
+        rowAddWrap.style.alignItems = 'center';
+        rowAddWrap.style.position = 'relative';
+
+        const rowAddBtn = document.createElement('button');
+        rowAddBtn.className = 'btn-add-comment';
+        rowAddBtn.innerText = '+';
+        rowAddBtn.title = 'הוסף נייט או מקליד/ה לשרשור זה';
+        rowAddBtn.onclick = () => {
+          openRowAddPopup = isRowPopupOpen ? null : rowKey;
+          render();
+        };
+        rowAddWrap.appendChild(rowAddBtn);
+
+        if(isRowPopupOpen){
+          const rowPopup = document.createElement('span');
+          rowPopup.className = 'add-comment-popup';
+
+          const rowTypistOpt = document.createElement('button');
+          rowTypistOpt.innerText = 'מקליד/ה';
+          rowTypistOpt.onclick = () => {
+            openRowAddPopup = null;
+            addRowThreadItem(cat.id, q.id, idx, 'typist');
+          };
+          rowPopup.appendChild(rowTypistOpt);
+
+          const rowNightOpt = document.createElement('button');
+          rowNightOpt.innerText = 'נייט';
+          rowNightOpt.onclick = () => {
+            openRowAddPopup = null;
+            addRowThreadItem(cat.id, q.id, idx, 'night');
+          };
+          rowPopup.appendChild(rowNightOpt);
+
+          const rowMarkRow = document.createElement('div');
+          rowMarkRow.className = 'add-comment-popup-mark-row';
+          if(lastTypistExtraIdx !== -1){
+            const lastExtraMark = extraItems[lastTypistExtraIdx].mark || null;
+            rowMarkRow.appendChild(buildMarkTools(cat.id, q.id, 'extra', lastExtraMark, idx, lastTypistExtraIdx));
+          } else {
+            rowMarkRow.appendChild(buildMarkTools(cat.id, q.id, 'comment', mark, idx));
+          }
+          rowPopup.appendChild(rowMarkRow);
+
+          rowAddWrap.appendChild(rowPopup);
+        }
+
+        bodyDiv.appendChild(rowAddWrap);
+        }
+      });
+
+      // כפתור "+" הכללי - מוצג רק כשאין עדיין אף תגובה, כדי להתחיל את השרשור הראשון.
+      // ברגע שיש תגובה אחת לפחות, ה"+" היחיד שקיים הוא זה שאחרי הפריט האחרון בשרשור (למעלה).
+      if((q.comments || []).length === 0){
+      const addCommentWrap = document.createElement('span');
+      addCommentWrap.style.display = 'inline-flex';
+      addCommentWrap.style.alignItems = 'center';
+      addCommentWrap.style.position = 'relative';
+
+      const addCommentBtn = document.createElement('button');
+      addCommentBtn.className = 'btn-add-comment';
+      addCommentBtn.innerText = '+';
+      addCommentBtn.title = 'הוסף מקליד/ה או נייט';
+      const isAddCommentPopupOpen = openAddCommentPopup === q.id;
+      addCommentBtn.onclick = () => {
+        openAddCommentPopup = isAddCommentPopupOpen ? null : q.id;
+        render();
+      };
+      addCommentWrap.appendChild(addCommentBtn);
+
+      if(isAddCommentPopupOpen){
+        const popup = document.createElement('span');
+        popup.className = 'add-comment-popup';
+
+        const addTypistOpt = document.createElement('button');
+        addTypistOpt.innerText = 'מקליד/ה';
+        addTypistOpt.onclick = () => {
+          openAddCommentPopup = null;
+          addComment(cat.id, q.id, false);
+        };
+        popup.appendChild(addTypistOpt);
+
+        const addNightOpt = document.createElement('button');
+        addNightOpt.innerText = 'נייט';
+        addNightOpt.onclick = () => {
+          openAddCommentPopup = null;
+          addComment(cat.id, q.id, true);
+        };
+        popup.appendChild(addNightOpt);
+
+        addCommentWrap.appendChild(popup);
+      }
+
+      bodyDiv.appendChild(addCommentWrap);
+      }
+
+      const doneBtn = document.createElement('button');
+      doneBtn.className = 'btn-done-mini';
+      doneBtn.innerText = q.done ? '↩' : '✔';
+      doneBtn.title = q.done ? 'בטל טופל' : 'טופל';
+      doneBtn.onclick = () => toggleDone(cat.id, q.id);
+      bodyDiv.appendChild(doneBtn);
+
+      qDiv.appendChild(bodyDiv);
+
+      if(pendingDeleteQid === q.id){
+        const confirmWrap = document.createElement('span');
+        confirmWrap.className = 'del-confirm-inline';
+
+        const msg = document.createElement('span');
+        msg.innerText = 'לא סומנה כטופלה - למחוק בכל זאת?';
+        confirmWrap.appendChild(msg);
+
+        const yesBtn = document.createElement('button');
+        yesBtn.innerText = 'כן';
+        yesBtn.onclick = () => confirmDeleteQuestion(cat.id, q.id);
+        confirmWrap.appendChild(yesBtn);
+
+        const noBtn = document.createElement('button');
+        noBtn.innerText = 'לא';
+        noBtn.onclick = cancelDeleteQuestion;
+        confirmWrap.appendChild(noBtn);
+
+        qDiv.appendChild(confirmWrap);
+      } else {
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn-del';
+        delBtn.innerText = '🗑';
+        delBtn.title = 'מחק שאלה';
+        delBtn.onclick = () => deleteQuestion(cat.id, q.id);
+        delBtn.onmouseenter = () => qDiv.classList.add('row-del-hover');
+        delBtn.onmouseleave = () => qDiv.classList.remove('row-del-hover');
+        qDiv.appendChild(delBtn);
+      }
+
+      catDiv.appendChild(qDiv);
+    });
+
+    flatNav.push({qid: null, idx: 'add', catId: cat.id});
+
+    // add question row
+    const addRow = document.createElement('div');
+    addRow.className = 'add-row';
+    const addInput = document.createElement('div');
+    addInput.className = 'qtext new-question-input';
+    addInput.contentEditable = true;
+    addInput.setAttribute('contenteditable', 'true');
+    addInput.id = 'add-input-' + cat.id;
+    addInput.setAttribute('data-placeholder', cat.mode === 'night' ? 'נייט חדש... (Enter להוספה מהירה)' : 'שאלה חדשה... (Enter להוספה מהירה, אפשר גם להדביק תמונה)');
+    addInput.onkeydown = (e) => {
+      if(e.key === 'Enter'){
+        e.preventDefault();
+        lastFocusCatId = cat.id;
+        addQuestion(cat.id, addInput.innerHTML);
+      } else if(e.key === 'ArrowDown'){
+        e.preventDefault();
+        insertLineBreakAtCaret();
+      } else if(e.key === 'ArrowUp'){
+        if(isCaretOnFirstLine(addInput)){
+          handleAddInputNav(e, cat.id);
+        }
+      }
+    };
+    attachImagePaste(addInput);
+
+    const addBtn = document.createElement('button');
+    addBtn.innerText = '+';
+    addBtn.title = 'הוסף שאלה';
+    addBtn.onclick = () => addQuestion(cat.id, addInput.innerHTML);
+
+    addRow.appendChild(addInput);
+    addRow.appendChild(addBtn);
+    catDiv.appendChild(addRow);
+
+    board.appendChild(catDiv);
+  });
+
+  const addCatBottom = document.createElement('div');
+  addCatBottom.className = 'add-category-row';
+  addCatBottom.style.marginTop = '10px';
+
+  const bottomInput = document.createElement('input');
+  bottomInput.type = 'text';
+  bottomInput.id = 'new-cat-input-bottom';
+  bottomInput.placeholder = 'שם קטגוריה חדשה, למשל: קוליות';
+  bottomInput.onkeydown = (e) => {
+    if(e.key === 'Enter'){
+      e.preventDefault();
+      addCategory('new-cat-input-bottom');
+    }
+  };
+  addCatBottom.appendChild(bottomInput);
+
+  const bottomBtn = document.createElement('button');
+  bottomBtn.innerText = '+';
+  bottomBtn.title = 'הוסף קטגוריה חדשה';
+  bottomBtn.onclick = () => addCategory('new-cat-input-bottom');
+  addCatBottom.appendChild(bottomBtn);
+
+  board.appendChild(addCatBottom);
+
+  if(lastFocusCatId){
+    const catIdToFocus = lastFocusCatId;
+    const inputToFocus = document.getElementById('add-input-' + catIdToFocus);
+    if(inputToFocus) inputToFocus.focus();
+    lastFocusCatId = null;
+    // רשת ביטחון: אם משהו אסינכרוני (למשל הד מ-Firebase) גוזל את הפוקוס רגע אחרי,
+    // ננסה להחזיר אותו לאותה תיבה כמה פעמים בפרקי זמן קצרים
+    [30, 100, 300].forEach(delay => {
+      setTimeout(() => {
+        const el = document.getElementById('add-input-' + catIdToFocus);
+        if(el && document.activeElement !== el && document.activeElement === document.body){
+          el.focus();
+        }
+      }, delay);
+    });
+  }
+
+  if(lastFocusNewQid){
+    const qidToFocus = lastFocusNewQid;
+    focusFieldEnd(qidToFocus, 'text');
+    lastFocusNewQid = null;
+    [30, 100, 300].forEach(delay => {
+      setTimeout(() => {
+        const el = document.querySelector('[data-qid="' + qidToFocus + '"][data-col="text"]');
+        if(el && document.activeElement !== el && document.activeElement === document.body){
+          el.focus();
+          placeCaretAtEnd(el);
+        }
+      }, delay);
+    });
+  }
+}
+
+// מפורמט מפתח תאריך (YYYY-MM-DD) לתצוגה בעברית, כמו שורת התאריך הראשית
+function formatDateKeyDisplay(dateKey){
+  const parts = dateKey.split('-');
+  if(parts.length !== 3) return dateKey;
+  const days = ['יום ראשון', 'יום שני', 'יום שלישי', 'יום רביעי', 'יום חמישי', 'יום שישי', 'יום שבת'];
+  const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+  return days[d.getDay()] + ' ' + d.getDate() + '/' + (d.getMonth() + 1) + '/' + d.getFullYear();
+}
+
+function toggleHistoryView(){
+  currentView = (currentView === 'history') ? 'board' : 'history';
+  if(currentView === 'history') historyDateIndex = 0;
+  render();
+}
+
+// בונה בלוק שאלה לתצוגה בלבד (היסטוריה) - בלי עריכה ובלי קו חוצה של "טופל",
+// גם אם השאלה הייתה מסומנת כטופלה לפני שנמחקה. אם מועבר restoreInfo, מוצג גם כפתור שחזור.
+function buildReadOnlyQuestionBlock(q, isNightCat, numberLabel, restoreInfo){
+  const qDiv = document.createElement('div');
+  qDiv.className = 'question-block readonly' + (q.sub ? ' sub' : '');
+
+  const numDiv = document.createElement('div');
+  numDiv.className = 'qnum';
+  numDiv.innerText = numberLabel;
+  qDiv.appendChild(numDiv);
+
+  const bodyDiv = document.createElement('div');
+  bodyDiv.className = 'qbody';
+
+  const textDiv = document.createElement('div');
+  textDiv.className = isNightCat ? 'answer' : ('qtext' + (q.textMark ? (' mark-' + q.textMark) : ''));
+  textDiv.innerHTML = q.text || '';
+  bodyDiv.appendChild(textDiv);
+
+  if(!isNightCat){
+    const answerDiv = document.createElement('div');
+    answerDiv.className = 'answer';
+    answerDiv.innerText = q.answer || '';
+    bodyDiv.appendChild(answerDiv);
+  }
+
+  (q.comments || []).forEach((commentText, idx) => {
+    const mark = (q.commentMarks && q.commentMarks[idx]) || null;
+    if(commentText && commentText.trim() !== ''){
+      const commentDiv = document.createElement('div');
+      commentDiv.className = 'comment' + (mark ? (' mark-' + mark) : '');
+      commentDiv.innerText = commentText;
+      bodyDiv.appendChild(commentDiv);
+    }
+    const nightText = q.commentNights && q.commentNights[idx];
+    if(nightText && nightText.trim() !== ''){
+      const nightDiv = document.createElement('div');
+      nightDiv.className = 'answer';
+      nightDiv.innerText = nightText;
+      bodyDiv.appendChild(nightDiv);
+    }
+    const extraItems = (q.commentExtra && q.commentExtra[idx]) || [];
+    extraItems.forEach(item => {
+      if(!item || !item.text || item.text.trim() === '') return;
+      const itemDiv = document.createElement('div');
+      itemDiv.className = item.type === 'night' ? 'answer' : ('comment' + (item.mark ? (' mark-' + item.mark) : ''));
+      itemDiv.innerText = item.text;
+      bodyDiv.appendChild(itemDiv);
+    });
+  });
+
+  const attrText = formatAttribution(q);
+  if(attrText){
+    const attrDiv = document.createElement('div');
+    attrDiv.className = 'q-attribution';
+    attrDiv.innerText = attrText;
+    bodyDiv.appendChild(attrDiv);
+  }
+
+  if(restoreInfo){
+    const restoreBtn = document.createElement('button');
+    restoreBtn.className = 'history-restore-btn';
+    restoreBtn.innerText = '↩ שחזור לשאלה פעילה';
+    restoreBtn.onclick = () => {
+      restoreQuestionFromHistory(restoreInfo.dateKey, restoreInfo.catId, restoreInfo.pushKey, q);
+    };
+    bodyDiv.appendChild(restoreBtn);
+  }
+
+  qDiv.appendChild(bodyDiv);
+  return qDiv;
+}
+
+// מחזיר שאלה מההיסטוריה בחזרה לקטגוריה הפעילה בלוח, ומסיר אותה מההיסטוריה
+function restoreQuestionFromHistory(dateKey, catId, pushKey, q){
+  const cat = state.categories.find(c => c.id === catId);
+  if(!cat){
+    alert('לא ניתן לשחזר - הקטגוריה המקורית כבר לא קיימת בלוח.');
+    return;
+  }
+
+  const restored = Object.assign({}, q, { id: uid('q'), deletedBy: null });
+  cat.questions.push(restored);
+
+  // מסירים מההיסטוריה גם ב-Firebase וגם מקומית, כדי שהתצוגה תתעדכן מיד
+  if(database){
+    database.ref('historyState/' + dateKey + '/' + catId + '/questions/' + pushKey).remove().catch((err) => {
+      console.error('Firebase HISTORY REMOVE (after restore) failed:', err);
+    });
+  }
+  if(historyData[dateKey] && historyData[dateKey][catId] && historyData[dateKey][catId].questions){
+    delete historyData[dateKey][catId].questions[pushKey];
+  }
+
+  currentView = 'board';
+  render();
+  saveStateToFirebase();
+}
+
+function renderHistory(){
+  const board = document.getElementById('board');
+  board.innerHTML = '';
+
+  if(historyLoadError){
+    const errBox = document.createElement('div');
+    errBox.className = 'history-error';
+    errBox.innerHTML = '<b>לא ניתן לטעון את ההיסטוריה</b>' +
+      'שגיאה מ-Firebase: <code>' + historyLoadError + '</code><br>' +
+      'סביר להניח שכללי ההרשאות (Rules) במסד הנתונים מגבילים גישה לנתיב <code>historyState</code>. ' +
+      'יש לוודא בהגדרות ה-Realtime Database שהנתיב הזה מאושר לקריאה וכתיבה, לא רק boardState.';
+    board.appendChild(errBox);
+    return;
+  }
+
+  // מהחדש לישן
+  const dateKeys = Object.keys(historyData || {}).sort((a, b) => b.localeCompare(a));
+
+  if(dateKeys.length === 0){
+    const empty = document.createElement('div');
+    empty.className = 'history-empty';
+    empty.innerText = 'עדיין אין שאלות בהיסטוריה.';
+    board.appendChild(empty);
+    return;
+  }
+
+  if(historyDateIndex < 0) historyDateIndex = 0;
+  if(historyDateIndex >= dateKeys.length) historyDateIndex = dateKeys.length - 1;
+
+  // סרגל ניווט בין תאריכים: הבא/קודם + בחירה ישירה מרשימה
+  const nav = document.createElement('div');
+  nav.className = 'history-nav';
+
+  const newerBtn = document.createElement('button');
+  newerBtn.className = 'history-nav-btn';
+  newerBtn.innerText = '▶ חדש יותר';
+  newerBtn.title = 'תאריך חדש יותר';
+  newerBtn.disabled = historyDateIndex <= 0;
+  newerBtn.onclick = () => {
+    historyDateIndex = Math.max(0, historyDateIndex - 1);
+    render();
+  };
+  nav.appendChild(newerBtn);
+
+  const select = document.createElement('select');
+  select.className = 'history-date-select';
+  dateKeys.forEach((dk, i) => {
+    const opt = document.createElement('option');
+    opt.value = String(i);
+    opt.innerText = formatDateKeyDisplay(dk);
+    if(i === historyDateIndex) opt.selected = true;
+    select.appendChild(opt);
+  });
+  select.onchange = () => {
+    historyDateIndex = Number(select.value);
+    render();
+  };
+  nav.appendChild(select);
+
+  const olderBtn = document.createElement('button');
+  olderBtn.className = 'history-nav-btn';
+  olderBtn.innerText = 'ישן יותר ◀';
+  olderBtn.title = 'תאריך ישן יותר';
+  olderBtn.disabled = historyDateIndex >= dateKeys.length - 1;
+  olderBtn.onclick = () => {
+    historyDateIndex = Math.min(dateKeys.length - 1, historyDateIndex + 1);
+    render();
+  };
+  nav.appendChild(olderBtn);
+
+  board.appendChild(nav);
+
+  // תוכן התאריך הנבחר בלבד
+  const dateKey = dateKeys[historyDateIndex];
+  const catsForDate = historyData[dateKey] || {};
+  // מסדרים את הקטגוריות לפי הסדר הנוכחי שלהן בדף השאלות; קטגוריות שנמחקו מהדף הראשי
+  // (ולכן לא מופיעות ב-state.categories) מוצגות אחרי כל השאר, בסדר יציב.
+  const catOrderMap = {};
+  state.categories.forEach((c, i) => { catOrderMap[c.id] = i; });
+  const catIds = Object.keys(catsForDate).sort((a, b) => {
+    const ao = Object.prototype.hasOwnProperty.call(catOrderMap, a) ? catOrderMap[a] : Infinity;
+    const bo = Object.prototype.hasOwnProperty.call(catOrderMap, b) ? catOrderMap[b] : Infinity;
+    if(ao !== bo) return ao - bo;
+    return a.localeCompare(b);
+  });
+
+  const dateBlock = document.createElement('div');
+  dateBlock.className = 'history-date-block';
+
+  const heading = document.createElement('div');
+  heading.className = 'history-date-heading';
+  heading.innerText = formatDateKeyDisplay(dateKey);
+  dateBlock.appendChild(heading);
+
+  let hasAnyQuestionForDate = false;
+
+  catIds.forEach(catId => {
+    const catEntry = catsForDate[catId];
+    if(!catEntry || !catEntry.questions) return;
+    const questionsObj = catEntry.questions;
+    const qList = Object.keys(questionsObj)
+      .map(k => ({ key: k, q: questionsObj[k] }))
+      .filter(item => item.q)
+      .sort((a, b) => (a.key < b.key ? -1 : (a.key > b.key ? 1 : 0)));
+    if(qList.length === 0) return;
+    hasAnyQuestionForDate = true;
+
+    const catDiv = document.createElement('div');
+    catDiv.className = 'category';
+
+    const header = document.createElement('div');
+    header.className = 'category-header';
+    const titleEl = document.createElement('div');
+    titleEl.className = 'category-title';
+    titleEl.innerText = catEntry.title || '';
+    header.appendChild(titleEl);
+    catDiv.appendChild(header);
+
+    const isNightCat = (catId === 'cat-night');
+    let mainCounter = 0;
+    qList.forEach(item => {
+      const q = item.q;
+      if(!q.sub) mainCounter++;
+      const label = q.sub ? '+' : (mainCounter + '.');
+      const restoreInfo = { dateKey: dateKey, catId: catId, pushKey: item.key };
+      catDiv.appendChild(buildReadOnlyQuestionBlock(q, isNightCat, label, restoreInfo));
+    });
+
+    dateBlock.appendChild(catDiv);
+  });
+
+  if(!hasAnyQuestionForDate){
+    const empty = document.createElement('div');
+    empty.className = 'history-empty';
+    empty.innerText = 'אין שאלות בתאריך זה.';
+    dateBlock.appendChild(empty);
+  }
+
+  board.appendChild(dateBlock);
+}
+
+// שומר את רשימת המשתמשים המעודכנת ב-Firebase, כך שהיא מסתנכרת לכל המכשירים
+function saveUsersToFirebase(){
+  if(!database) return;
+  database.ref('usersState').set(usersData).catch((err) => {
+    console.error('Firebase USERS SAVE failed (check your database Rules for write access):', err);
+  });
+}
+
+// שומר את רשימת הרשאות המנהל המעודכנת ב-Firebase, כך שהיא מסתנכרת לכל המכשירים
+function saveAdminsToFirebase(){
+  if(!database) return;
+  database.ref('adminUsersState').set(adminUsersData).catch((err) => {
+    console.error('Firebase ADMINS SAVE failed (check your database Rules for write access):', err);
+  });
+}
+
+// דף "ניהול משתמשים" - זמין רק למנהל (Yuval). מציג את רשימת המשתמשים, מאפשר לערוך
+// סיסמה, למחוק משתמש (חוץ מהמנהל עצמו, כדי לא לחסום גישה בטעות) ולהוסיף משתמש חדש.
+function toggleUsersView(){
+  if(!isAdmin()) return; // הגנה נוספת בצד לקוח - הכפתור ממילא מוסתר למי שאינו מנהל
+  currentView = (currentView === 'users') ? 'board' : 'users';
+  render();
+}
+
+function renderUsersPage(){
+  const board = document.getElementById('board');
+  board.innerHTML = '';
+
+  if(!isAdmin()){
+    const denied = document.createElement('div');
+    denied.className = 'history-error';
+    denied.innerHTML = '<b>אין הרשאה</b>העמוד הזה זמין רק למנהל המערכת.';
+    board.appendChild(denied);
+    return;
+  }
+
+  if(usersLoadError){
+    const errBox = document.createElement('div');
+    errBox.className = 'history-error';
+    errBox.innerHTML = '<b>לא ניתן לטעון את רשימת המשתמשים</b>' +
+      'שגיאה מ-Firebase: <code>' + usersLoadError + '</code><br>' +
+      'יש לוודא בהגדרות ה-Realtime Database שהנתיב <code>usersState</code> מאושר לקריאה וכתיבה.';
+    board.appendChild(errBox);
+    return;
+  }
+
+  const wrap = document.createElement('div');
+  wrap.className = 'category';
+  wrap.style.maxWidth = '820px';
+  wrap.style.margin = '0 auto';
+
+  const header = document.createElement('div');
+  header.className = 'category-header';
+  const title = document.createElement('div');
+  title.className = 'category-title';
+  title.innerText = 'ניהול משתמשים';
+  header.appendChild(title);
+  wrap.appendChild(header);
+
+  const usernames = Object.keys(usersData).sort((a, b) => a.localeCompare(b, 'he'));
+
+  const colHeaderRow = document.createElement('div');
+  colHeaderRow.className = 'question-block';
+  colHeaderRow.style.alignItems = 'center';
+
+  const nameColHeader = document.createElement('div');
+  nameColHeader.style.minWidth = '110px';
+  nameColHeader.style.maxWidth = '140px';
+  nameColHeader.style.fontSize = '11.5px';
+  nameColHeader.style.color = '#888';
+  nameColHeader.style.textAlign = 'center';
+  nameColHeader.innerText = 'שם יוזר';
+  colHeaderRow.appendChild(nameColHeader);
+
+  const passColHeader = document.createElement('div');
+  passColHeader.style.flex = '1';
+  passColHeader.style.minWidth = '120px';
+  passColHeader.style.fontSize = '11.5px';
+  passColHeader.style.color = '#888';
+  passColHeader.style.textAlign = 'center';
+  passColHeader.innerText = 'סיסמא';
+  colHeaderRow.appendChild(passColHeader);
+
+  wrap.appendChild(colHeaderRow);
+
+  usernames.forEach(username => {
+    const row = document.createElement('div');
+    row.className = 'question-block';
+    row.style.alignItems = 'center';
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.value = username;
+    nameInput.title = 'שם משתמש - ניתן לערוך';
+    nameInput.style.minWidth = '110px';
+    nameInput.style.maxWidth = '140px';
+    nameInput.style.fontWeight = 'bold';
+    nameInput.style.padding = '6px 8px';
+    nameInput.style.border = '1px solid #ccc';
+    nameInput.style.borderRadius = '6px';
+    nameInput.style.fontSize = '13px';
+    nameInput.onchange = () => {
+      const newName = nameInput.value.trim();
+      if(!newName || newName === username){
+        nameInput.value = username;
+        return;
+      }
+      if((newName === ADMIN_USERNAME && username !== ADMIN_USERNAME) || Object.prototype.hasOwnProperty.call(usersData, newName)){
+        alert('שם המשתמש כבר קיים.');
+        nameInput.value = username;
+        return;
+      }
+      const pass = usersData[username];
+      delete usersData[username];
+      usersData[newName] = pass;
+      if(Object.prototype.hasOwnProperty.call(adminUsersData, username)){
+        const wasAdmin = adminUsersData[username];
+        delete adminUsersData[username];
+        adminUsersData[newName] = wasAdmin;
+        saveAdminsToFirebase();
+      }
+      if(currentUser === username) currentUser = newName;
+      saveUsersToFirebase();
+      render();
+    };
+    row.appendChild(nameInput);
+
+    const passInput = document.createElement('input');
+    passInput.type = 'text';
+    passInput.value = usersData[username];
+    passInput.title = 'סיסמה - ניתן לערוך';
+    passInput.style.flex = '1';
+    passInput.style.minWidth = '120px';
+    passInput.style.padding = '6px 8px';
+    passInput.style.border = '1px solid #ccc';
+    passInput.style.borderRadius = '6px';
+    passInput.style.fontSize = '13px';
+    passInput.onchange = () => {
+      const val = passInput.value.trim();
+      if(!val){
+        passInput.value = usersData[username];
+        return;
+      }
+      usersData[username] = val;
+      saveUsersToFirebase();
+    };
+    row.appendChild(passInput);
+
+    const adminLabel = document.createElement('label');
+    adminLabel.style.display = 'flex';
+    adminLabel.style.alignItems = 'center';
+    adminLabel.style.gap = '4px';
+    adminLabel.style.fontSize = '13px';
+    adminLabel.style.whiteSpace = 'nowrap';
+    adminLabel.style.cursor = (username === ADMIN_USERNAME) ? 'default' : 'pointer';
+
+    const adminCheckbox = document.createElement('input');
+    adminCheckbox.type = 'checkbox';
+    adminCheckbox.checked = (username === ADMIN_USERNAME) ? true : !!adminUsersData[username];
+    adminCheckbox.style.accentColor = 'var(--accent)';
+    const isProtectedAdmin = (username === ADMIN_USERNAME);
+    adminCheckbox.onclick = (e) => {
+      if(isProtectedAdmin){
+        e.preventDefault();
+      }
+    };
+    adminCheckbox.onchange = () => {
+      if(isProtectedAdmin){
+        adminCheckbox.checked = true;
+        return;
+      }
+      if(adminCheckbox.checked){
+        adminUsersData[username] = true;
+      } else {
+        delete adminUsersData[username];
+      }
+      saveAdminsToFirebase();
+    };
+    adminLabel.appendChild(adminCheckbox);
+    adminLabel.appendChild(document.createTextNode('הרשאת מנהל'));
+    row.appendChild(adminLabel);
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn-del';
+    delBtn.innerText = '🗑';
+    delBtn.title = 'מחיקת משתמש';
+    delBtn.onclick = () => {
+      if(username === ADMIN_USERNAME){
+        alert('לא ניתן למחוק את חשבון המנהל.');
+        return;
+      }
+      if(confirm('למחוק את המשתמש "' + username + '"?')){
+        delete usersData[username];
+        if(Object.prototype.hasOwnProperty.call(adminUsersData, username)){
+          delete adminUsersData[username];
+          saveAdminsToFirebase();
+        }
+        saveUsersToFirebase();
+        render();
+      }
+    };
+    row.appendChild(delBtn);
+
+    wrap.appendChild(row);
+  });
+
+  // הוספת משתמש חדש
+  const addRow = document.createElement('div');
+  addRow.className = 'add-row';
+
+  const newUserInput = document.createElement('input');
+  newUserInput.type = 'text';
+  newUserInput.placeholder = 'שם משתמש חדש';
+  newUserInput.style.maxWidth = '160px';
+
+  const newPassInput = document.createElement('input');
+  newPassInput.type = 'text';
+  newPassInput.placeholder = 'סיסמה';
+
+  const doAddUser = () => {
+    const uname = newUserInput.value.trim();
+    const pass = newPassInput.value.trim();
+    if(!uname || !pass) return;
+    if(Object.prototype.hasOwnProperty.call(usersData, uname)){
+      alert('שם המשתמש כבר קיים.');
+      return;
+    }
+    usersData[uname] = pass;
+    saveUsersToFirebase();
+    render();
+  };
+  newUserInput.onkeydown = (e) => { if(e.key === 'Enter') doAddUser(); };
+  newPassInput.onkeydown = (e) => { if(e.key === 'Enter') doAddUser(); };
+
+  const addBtn = document.createElement('button');
+  addBtn.innerText = '+ הוסף משתמש';
+  addBtn.onclick = doAddUser;
+
+  addRow.appendChild(newUserInput);
+  addRow.appendChild(newPassInput);
+  addRow.appendChild(addBtn);
+  wrap.appendChild(addRow);
+
+  board.appendChild(wrap);
+}
+
+// דיספצ'ר תצוגה: מציג את הלוח הרגיל, את דף ההיסטוריה, או את דף ניהול המשתמשים, לפי currentView
+function render(){
+  const toggleBtn = document.getElementById('historyToggleBtn');
+  if(toggleBtn){
+    toggleBtn.innerText = (currentView === 'history') ? 'חזרה ללוח' : 'היסטוריה';
+  }
+  const adminBtn = document.getElementById('usersAdminBtn');
+  if(adminBtn){
+    adminBtn.style.display = isAdmin() ? '' : 'none';
+    adminBtn.innerText = (currentView === 'users') ? 'חזרה לשאלות ובקשות' : 'ניהול משתמשים';
+  }
+  if(currentView === 'users' && !isAdmin()){
+    // הגנה: אם משום מה מנסים להציג את דף המשתמשים כשלא מדובר במנהל, חוזרים ללוח
+    currentView = 'board';
+  }
+  if(currentView === 'history'){
+    renderHistory();
+  } else if(currentView === 'users'){
+    renderUsersPage();
+  } else {
+    renderBoard();
+  }
+}
+
+document.addEventListener('click', (e) => {
+  if(e.target.tagName === 'IMG' && e.target.closest('[contenteditable="true"]')){
+    e.preventDefault();
+    openImageResizePopup(e.target);
+  } else if(activeResizeImg && !e.target.closest('.image-resize-popup')){
+    closeImageResizePopup();
+  }
+
+  let needsRender = false;
+  if(openMarkPopup && !e.target.closest('.mark-tools')){
+    openMarkPopup = null;
+    needsRender = true;
+  }
+  if(openAddCommentPopup && !e.target.closest('.btn-add-comment') && !e.target.closest('.add-comment-popup')){
+    openAddCommentPopup = null;
+    needsRender = true;
+  }
+  if(openRowAddPopup && !e.target.closest('.btn-add-comment') && !e.target.closest('.add-comment-popup')){
+    openRowAddPopup = null;
+    needsRender = true;
+  }
+  if(openQuestionMenu && !e.target.closest('.question-menu')){
+    openQuestionMenu = null;
+    needsRender = true;
+  }
+  if(needsRender) render();
+});
+
+tryAutoLogin();
+</script>
+
+</body>
+</html>
